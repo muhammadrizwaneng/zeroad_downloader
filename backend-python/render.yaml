@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: zeroads-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: CORS_ORIGIN
+        value: "*"

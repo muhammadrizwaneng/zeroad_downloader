@@ -1,0 +1,131 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  min-height: 100%;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+  background: #0f1219;
+  color: #f8fafc;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.page {
+  width: 100%;
+  max-width: 420px;
+  text-align: center;
+}
+
+.logo {
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin-bottom: 8px;
+}
+
+.tagline {
+  color: #64748b;
+  font-size: 1rem;
+  margin-bottom: 32px;
+  line-height: 1.5;
+}
+
+.card {
+  background: #1a1f2e;
+  border: 1px solid #2a3348;
+  border-radius: 16px;
+  padding: 28px 24px;
+  margin-bottom: 20px;
+}
+
+.card h2 {
+  font-size: 1.25rem;
+  margin-bottom: 10px;
+}
+
+.card p {
+  color: #94a3b8;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+
+.download-btn {
+  display: inline-block;
+  width: 100%;
+  background: #2563eb;
+  color: #fff;
+  font-size: 1.05rem;
+  font-weight: 700;
+  text-decoration: none;
+  padding: 14px 20px;
+  border-radius: 12px;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.download-btn:hover {
+  opacity: 0.9;
+}
+
+.download-btn:active {
+  opacity: 0.85;
+}
+
+.ios-icon {
+  font-size: 3rem;
+  margin-bottom: 12px;
+}
+
+.warning {
+  color: #fca5a5;
+  font-weight: 600;
+}
+
+.note {
+  color: #64748b;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.features {
+  text-align: left;
+  color: #cbd5e1;
+  font-size: 0.9rem;
+  line-height: 1.8;
+  list-style: none;
+  margin: 16px 0 0;
+}
+
+.features li::before {
+  content: '✓ ';
+  color: #22c55e;
+  font-weight: 700;
+}
+
+.loading {
+  color: #64748b;
+  font-size: 0.95rem;
+}
+
+.note code {
+  color: #93c5fd;
+  font-size: 0.8rem;
+}

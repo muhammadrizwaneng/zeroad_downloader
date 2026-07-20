@@ -1,0 +1,4 @@
+# Place your built APK here before deploying to Vercel:
+#   cp mobile/android/app/build/outputs/apk/release/app-release.apk web/public/zeroads.apk
+#
+# Or set NEXT_PUBLIC_APK_URL in Vercel to host the APK elsewhere (GitHub Releases, etc.)
