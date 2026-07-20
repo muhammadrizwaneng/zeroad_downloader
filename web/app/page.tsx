@@ -80,7 +80,7 @@ export default function HomePage() {
           </p>
         </div>
       )}
-
+{/* this app is not for ios */}
       {device === 'ios' && (
         <div className="card">
           <div className="ios-icon" aria-hidden="true">
