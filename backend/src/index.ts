@@ -1,6 +1,6 @@
 import cors from 'cors';
 import express from 'express';
-import rateLimit from 'express-rate-limit';
+import { rateLimit } from 'express-rate-limit';
 import { downloadRouter } from './routes/download.js';
 import { extractRouter } from './routes/extract.js';
 
