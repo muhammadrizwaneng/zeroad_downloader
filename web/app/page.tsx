@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { APP_NAME, APK_DOWNLOAD_URL, hasApkUrl } from './config';
+import { APP_NAME, APK_DOWNLOAD_URL, APK_FILENAME, hasApkUrl } from './config';
 
 type DeviceType = 'android' | 'ios' | 'other' | 'loading';
 
@@ -38,6 +38,7 @@ function DownloadButton({ label }: { label: string }) {
       <a
         className="download-btn"
         href={APK_DOWNLOAD_URL}
+        download={APK_FILENAME}
         rel="noopener noreferrer">
         {label}
       </a>
