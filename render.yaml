@@ -1,9 +1,11 @@
+# Render Blueprint — deploy from repo root: Dashboard → New → Blueprint
+# Or: connect GitHub repo and set Root Directory to backend-python manually.
 services:
   - type: web
     name: zeroads-api
     runtime: docker
+    rootDir: backend-python
     plan: free
-    dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
       - key: CORS_ORIGIN

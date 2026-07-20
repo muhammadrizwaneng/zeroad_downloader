@@ -15,6 +15,9 @@ const DEV_API_HOST = DEV_API_HOST_OVERRIDE
     ? '10.0.2.2'
     : 'localhost';
 
+/** Render production API — update after deploy if your service name differs */
+const PRODUCTION_API_URL = 'https://zeroads-api.onrender.com';
+
 export const API_BASE_URL = __DEV__
   ? `http://${DEV_API_HOST}:3000`
-  : 'https://your-production-api.example.com';
+  : PRODUCTION_API_URL;

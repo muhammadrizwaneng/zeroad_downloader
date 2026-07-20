@@ -6,9 +6,11 @@ Ad-free social media video and audio downloader — Phase 1 proof of concept.
 
 ```
 zero_downloader/
-├── backend/     Node.js extraction API (yt-dlp wrapper)
-├── mobile/      React Native CLI app
-└── ZeroAds_Downloader_Blueprint.pdf
+├── backend/          # Node.js API (local dev)
+├── backend-python/   # FastAPI API (Render production)
+├── web/              # Next.js landing (Vercel)
+├── mobile/           # React Native CLI app
+└── DEPLOY.md         # Render + Vercel guide
 ```
 
 ## Prerequisites
@@ -93,9 +95,23 @@ Android share works out of the box. iOS requires adding a **Share Extension** in
 - [ ] Share intent integration (Phase 2)
 - [ ] Background auto-resume queue (Phase 2)
 
-## Deployment notes
+## Deployment (Render + Vercel)
 
-- **Vercel** — suitable for a thin API gateway only; yt-dlp needs a container host (Railway, Render, Fly.io, Cloud Run).
+Full step-by-step guide: **[DEPLOY.md](./DEPLOY.md)**
+
+| Service | Platform | Folder |
+|---------|----------|--------|
+| Extraction API | [Render](https://render.com) (Docker, free tier) | `backend-python/` |
+| Landing + APK link | [Vercel](https://vercel.com) | `web/` |
+| Android APK | GitHub Releases | build from `mobile/` |
+
+Quick test after Render deploy:
+
+```bash
+curl https://zeroads-api.onrender.com/health
+```
+
+- **Vercel** — landing page only; yt-dlp runs on Render, not Vercel serverless.
 - **Play Store** — do not ship YouTube extraction in Play Store builds; distribute full APK separately (see blueprint).
 
 ## Test the API with curl
