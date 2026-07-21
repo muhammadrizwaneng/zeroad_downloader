@@ -22,12 +22,12 @@ FAST_ARGS = [
 ]
 
 # Try alternate YouTube clients when the default is blocked on cloud IPs.
-YOUTUBE_CLIENT_FALLBACKS: list[list[str]] = [
-    [],
-    ["--extractor-args", "youtube:player_client=android_vr"],
-    ["--extractor-args", "youtube:player_client=tv,web"],
-    ["--extractor-args", "youtube:player_client=web_embedded"],
-    ["--extractor-args", "youtube:player_client=ios,web"],
+YOUTUBE_PLAYER_CLIENTS: list[str | None] = [
+    "android_vr,tv,web",
+    "tv,web",
+    "web_embedded",
+    "ios,web",
+    None,
 ]
 
 _cookies_file_path: str | None = None
@@ -71,20 +71,36 @@ def _base_ytdlp_args() -> list[str]:
     return args
 
 
-def _youtube_pot_args() -> list[str]:
+def _youtube_extractor_args(player_client: str | None = None) -> list[str]:
+    args: list[str] = []
     pot_url = os.environ.get("YTDLP_POT_PROVIDER_URL", "http://127.0.0.1:4416").strip()
-    if not pot_url:
-        return []
-    return ["--extractor-args", f"youtubepot-bgutilhttp:base_url={pot_url}"]
+    if pot_url:
+        args.extend(["--extractor-args", f"youtubepot-bgutilhttp:base_url={pot_url}"])
+    if player_client:
+        args.extend(["--extractor-args", f"youtube:player_client={player_client}"])
+    return args
 
 
-def _youtube_client_fallbacks() -> list[list[str]]:
-    return YOUTUBE_CLIENT_FALLBACKS
+def _youtube_player_clients() -> list[str | None]:
+    return YOUTUBE_PLAYER_CLIENTS
+
+
+def _youtube_client_fallbacks() -> list[str | None]:
+    return _youtube_player_clients()
 
 
 def _is_youtube_bot_block(message: str) -> bool:
     lowered = message.lower()
     return "sign in to confirm" in lowered or "not a bot" in lowered
+
+
+def _is_youtube_format_error(message: str) -> bool:
+    lowered = message.lower()
+    return "requested format is not available" in lowered or "no video formats" in lowered
+
+
+def _is_retryable_youtube_error(message: str) -> bool:
+    return _is_youtube_bot_block(message) or _is_youtube_format_error(message)
 
 
 def _friendly_ytdlp_error(message: str) -> str:
@@ -93,6 +109,8 @@ def _friendly_ytdlp_error(message: str) -> str:
             "YouTube blocked this download from the server. "
             "Add fresh YouTube cookies to Render (see DEPLOY.md), or try TikTok/Instagram instead."
         )
+    if _is_youtube_format_error(message):
+        return "YouTube formats could not be read for this video. Try again or use a different link."
     if len(message) > 280:
         return message[:277] + "..."
     return message
@@ -228,7 +246,7 @@ def _collect_direct_combined_formats(formats: list[dict[str, Any]]) -> list[dict
 
 def _pick_best_audio(formats: list[dict[str, Any]]) -> dict[str, Any] | None:
     audio_formats = [
-        entry for entry in formats if entry.get("format_id") and entry.get("url") and _is_audio_only(entry)
+        entry for entry in formats if entry.get("format_id") and _is_audio_only(entry)
     ]
     if not audio_formats:
         return None
@@ -245,7 +263,6 @@ def _pick_best_video_at_height(formats: list[dict[str, Any]], height: int) -> di
         entry
         for entry in formats
         if entry.get("format_id")
-        and entry.get("url")
         and _is_video_only(entry)
         and entry.get("height") == height
     ]
@@ -312,7 +329,7 @@ def _collect_stream_combined_formats(
     title = data.get("title") or "video"
 
     for entry in data.get("formats") or []:
-        if not entry.get("url") or not entry.get("format_id"):
+        if not entry.get("format_id"):
             continue
         if not _has_video_and_audio(entry) or not _is_stream_url(entry):
             continue
@@ -347,10 +364,10 @@ def _add_universal_fallback(
     _upsert_format(
         formats,
         {
-            "formatId": "bestvideo+bestaudio/b",
+            "formatId": "bestvideo*+bestaudio/best",
             "ext": "mp4",
             "quality": "Best available",
-            "url": _build_download_url(api_base_url, page_url, "bestvideo+bestaudio/b", title),
+            "url": _build_download_url(api_base_url, page_url, "bestvideo*+bestaudio/best", title),
             "vcodec": "auto",
             "acodec": "auto",
             "type": "video",
@@ -397,10 +414,10 @@ def _collect_from_selected_metadata(data: dict[str, Any], api_base_url: str) -> 
             )
 
     for entry in data.get("formats") or []:
-        if not entry.get("url") or not entry.get("format_id") or not _has_video_and_audio(entry):
+        if not entry.get("format_id") or not _has_video_and_audio(entry):
             continue
 
-        if _is_direct_url(entry):
+        if entry.get("url") and _is_direct_url(entry):
             _upsert_format(
                 formats,
                 {
@@ -485,9 +502,9 @@ def _run_ytdlp_json(args: list[str]) -> dict[str, Any]:
         raise RuntimeError("Failed to parse yt-dlp output.") from exc
 
 
-def _extract_ytdlp_json(url: str, extra_args: list[str] | None = None) -> dict[str, Any]:
-    youtube_args = _youtube_pot_args() if _is_youtube_url(url) else []
-    args = [*_base_ytdlp_args(), *youtube_args, *(extra_args or []), "--dump-single-json", url]
+def _extract_ytdlp_json(url: str, player_client: str | None = None) -> dict[str, Any]:
+    youtube_args = _youtube_extractor_args(player_client) if _is_youtube_url(url) else []
+    args = [*_base_ytdlp_args(), *youtube_args, "--dump-single-json", url]
     return _run_ytdlp_json(args)
 
 
@@ -498,13 +515,13 @@ def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
     data: dict[str, Any] | None = None
     last_error: RuntimeError | None = None
 
-    for client_args in client_fallbacks:
+    for player_client in client_fallbacks:
         try:
-            data = _extract_ytdlp_json(normalized_url, client_args)
+            data = _extract_ytdlp_json(normalized_url, player_client)
             break
         except RuntimeError as exc:
             last_error = exc
-            if not _is_youtube_url(normalized_url) or not _is_youtube_bot_block(str(exc)):
+            if not _is_youtube_url(normalized_url) or not _is_retryable_youtube_error(str(exc)):
                 raise
 
     if data is None:
@@ -513,8 +530,9 @@ def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
     formats = _build_format_map(data, api_base_url)
 
     if not formats:
-        data = _extract_ytdlp_json(normalized_url, ["-f", "b"])
         formats = _collect_from_selected_metadata(data, api_base_url)
+        _collect_merged_formats(data, api_base_url, formats)
+        _collect_stream_combined_formats(data, api_base_url, formats)
         _add_universal_fallback(data, api_base_url, formats)
 
     result_formats = _finalize_formats(formats)
@@ -544,7 +562,7 @@ def merge_and_get_path(url: str, format_selector: str, title: str) -> tuple[Path
     _run_ytdlp(
         [
             *_base_ytdlp_args(),
-            *(_youtube_pot_args() if _is_youtube_url(url) else []),
+            *(_youtube_extractor_args("android_vr,tv,web") if _is_youtube_url(url) else []),
             "-f",
             format_selector,
             "--merge-output-format",
