@@ -97,7 +97,12 @@ export function HomeScreen() {
             onPress: async () => {
               setDownloading(true);
               try {
-                const openUrl = await resolveDownloadUrl(result.webpageUrl, format);
+                let openUrl = format.url;
+                try {
+                  openUrl = await resolveDownloadUrl(result.webpageUrl, format);
+                } catch {
+                  // Resolve slow/failed — fall back to server stream URL.
+                }
                 await Linking.openURL(openUrl);
               } catch (err) {
                 Alert.alert(
@@ -214,7 +219,7 @@ export function HomeScreen() {
       {downloading ? (
         <View style={styles.downloadOverlay}>
           <ActivityIndicator color="#ffffff" size="large" />
-          <Text style={styles.downloadOverlayText}>Getting download link…</Text>
+          <Text style={styles.downloadOverlayText}>Getting download link… (up to 2 min on free server)</Text>
         </View>
       ) : null}
     </KeyboardAvoidingView>

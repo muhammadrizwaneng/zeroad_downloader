@@ -780,6 +780,39 @@ def _normalize_download_format(format_selector: str) -> str:
     return format_selector
 
 
+def _get_direct_url_fast(url: str) -> str | None:
+    """Quick CDN resolve for /api/resolve — at most 2 yt-dlp attempts (~70s worst case)."""
+    if not _is_youtube_url(url):
+        return _get_direct_url_once(url, "best", timeout_sec=35)
+
+    youtube_args = _youtube_extractor_args(None)
+    for selector in ("best", "18"):
+        try:
+            stdout = _run_ytdlp(
+                [
+                    *_base_ytdlp_args(),
+                    *youtube_args,
+                    "--ignore-no-formats-error",
+                    "-f",
+                    selector,
+                    "-g",
+                    "--no-playlist",
+                    url,
+                ],
+                timeout_sec=35,
+            )
+            lines = [line.strip() for line in stdout.splitlines() if line.strip().startswith("http")]
+            if lines:
+                mp4_line = next(
+                    (line for line in lines if "googlevideo.com/videoplayback" in line),
+                    None,
+                )
+                return mp4_line or lines[0]
+        except RuntimeError:
+            continue
+    return None
+
+
 def _get_direct_url_once(url: str, format_selector: str, timeout_sec: int = 30) -> str | None:
     """Resolve CDN URL via yt-dlp -g (download endpoint only — not used during extract)."""
     youtube_args = _youtube_extractor_args(None) if _is_youtube_url(url) else []
@@ -895,7 +928,7 @@ def resolve_download_target(page_url: str, format_selector: str, api_base_url: s
             "url": _build_download_url(api_base_url, page_url, format_selector, title),
         }
 
-    direct = _get_direct_url_once(page_url, format_selector, timeout_sec=60)
+    direct = _get_direct_url_fast(page_url)
     if direct:
         return {"direct": True, "url": direct}
 

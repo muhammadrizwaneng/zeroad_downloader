@@ -110,7 +110,7 @@ export async function extractMedia(url: string, attempt = 1): Promise<ExtractRes
   }
 }
 
-const RESOLVE_TIMEOUT_MS = 90_000;
+const RESOLVE_TIMEOUT_MS = 120_000;
 
 export async function resolveDownloadUrl(
   pageUrl: string,
@@ -138,6 +138,11 @@ export async function resolveDownloadUrl(
       throw new Error(data.error || 'Could not resolve download URL.');
     }
     return data.url || format.url;
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Server took too long — try again in a moment.');
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
