@@ -359,6 +359,37 @@ def _collect_stream_combined_formats(
         )
 
 
+def _add_youtube_quality_presets(
+    data: dict[str, Any],
+    api_base_url: str,
+    formats: dict[str, dict[str, Any]],
+) -> None:
+    """Offer yt-dlp format strings when individual stream IDs are unavailable (common on cloud IPs)."""
+    page_url = data.get("webpage_url") or ""
+    title = data.get("title") or "video"
+    presets: list[tuple[str, str, bool]] = [
+        ("Best available", "best", False),
+        ("1080p", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best", True),
+        ("720p", "bestvideo[height<=720]+bestaudio/best[height<=720]/best", True),
+        ("480p", "bestvideo[height<=480]+bestaudio/best[height<=480]/best", True),
+    ]
+
+    for quality, format_id, needs_merge in presets:
+        _upsert_format(
+            formats,
+            {
+                "formatId": format_id,
+                "ext": "mp4",
+                "quality": quality,
+                "url": _build_download_url(api_base_url, page_url, format_id, title),
+                "vcodec": "auto",
+                "acodec": "auto",
+                "type": "video",
+                "needsMerge": needs_merge,
+            },
+        )
+
+
 def _add_universal_fallback(
     data: dict[str, Any],
     api_base_url: str,
@@ -373,14 +404,14 @@ def _add_universal_fallback(
     _upsert_format(
         formats,
         {
-            "formatId": "bestvideo*+bestaudio/best",
+            "formatId": "best",
             "ext": "mp4",
             "quality": "Best available",
-            "url": _build_download_url(api_base_url, page_url, "bestvideo*+bestaudio/best", title),
+            "url": _build_download_url(api_base_url, page_url, "best", title),
             "vcodec": "auto",
             "acodec": "auto",
             "type": "video",
-            "needsMerge": True,
+            "needsMerge": False,
         },
     )
 
@@ -469,6 +500,10 @@ def _build_format_map(data: dict[str, Any], api_base_url: str) -> dict[str, dict
 
     _collect_merged_formats(data, api_base_url, formats)
     _collect_stream_combined_formats(data, api_base_url, formats)
+
+    if _is_youtube_url(data.get("webpage_url") or ""):
+        _add_youtube_quality_presets(data, api_base_url, formats)
+
     _add_universal_fallback(data, api_base_url, formats)
 
     return formats
@@ -548,6 +583,8 @@ def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
         formats = _collect_from_selected_metadata(data, api_base_url)
         _collect_merged_formats(data, api_base_url, formats)
         _collect_stream_combined_formats(data, api_base_url, formats)
+        if _is_youtube_url(normalized_url):
+            _add_youtube_quality_presets(data, api_base_url, formats)
         _add_universal_fallback(data, api_base_url, formats)
 
     result_formats = _finalize_formats(formats)
@@ -612,10 +649,16 @@ def merge_and_get_path(url: str, format_selector: str, title: str) -> tuple[Path
     tmp_dir = tempfile.TemporaryDirectory(prefix="zeroads-")
     output_template = str(Path(tmp_dir.name) / "download.%(ext)s")
 
-    selectors = [format_selector]
-    fallback = "bestvideo*+bestaudio/best"
-    if format_selector != fallback:
-        selectors.append(fallback)
+    selectors: list[str] = []
+    for candidate in (
+        format_selector,
+        "best",
+        "bv*+ba/b",
+        "bestvideo*+bestaudio/best",
+        "b",
+    ):
+        if candidate not in selectors:
+            selectors.append(candidate)
 
     clients = _youtube_player_clients() if _is_youtube_url(url) else [None]
     last_error: RuntimeError | None = None
