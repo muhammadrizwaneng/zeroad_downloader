@@ -21,6 +21,7 @@ from ytdlp_service import (
     iter_ytdlp_download,
     merge_and_get_path,
     normalize_media_url,
+    resolve_download_target,
 )
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -96,6 +97,14 @@ def extract_status(request: Request, job_id: str):
     return {"status": status}
 
 
+@app.get("/api/resolve")
+@limiter.limit("20/minute")
+def resolve_download(request: Request, url: HttpUrl, format: str, title: str = "video"):
+    if not format or len(format) > 200:
+        return JSONResponse(status_code=400, content={"error": "Invalid format selector."})
+    return resolve_download_target(str(url), format, _api_base_url(request), title)
+
+
 @app.get("/api/download")
 @limiter.limit("10/minute")
 def download(request: Request, url: HttpUrl, format: str, title: str = "video"):
@@ -108,7 +117,7 @@ def download(request: Request, url: HttpUrl, format: str, title: str = "video"):
     try:
         # YouTube: redirect straight to googlevideo when possible.
         if not _needs_server_proxy_download(page_url):
-            direct_url = _get_direct_url_once(page_url, format, timeout_sec=8)
+            direct_url = _get_direct_url_once(page_url, format, timeout_sec=60)
             if direct_url:
                 return RedirectResponse(direct_url, status_code=302)
 

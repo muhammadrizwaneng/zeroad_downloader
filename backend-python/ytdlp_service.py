@@ -12,8 +12,8 @@ from urllib.parse import urlencode, urlparse, urlunparse
 
 EXTRACT_TIMEOUT_SEC = 240
 MERGE_TIMEOUT_SEC = 300
-YOUTUBE_ATTACH_RESOLVE_TIMEOUT = 25
-MAX_YOUTUBE_ATTACH_RESOLVE_CALLS = 2
+YOUTUBE_ATTACH_RESOLVE_TIMEOUT = 60
+MAX_YOUTUBE_ATTACH_RESOLVE_CALLS = 1
 YTDLP_BIN = os.environ.get("YTDLP_PATH", "yt-dlp")
 
 FAST_ARGS = [
@@ -744,10 +744,13 @@ def _pick_direct_url_by_height(
         ),
     )
     return best_entry["url"]
+
+
 def _youtube_format_fallbacks(format_selector: str, fast: bool = False) -> list[str]:
     normalized = _normalize_download_format(format_selector)
     if fast:
-        fallbacks = [normalized, "best"]
+        # Simple selectors first — complex ones often fail on Render cloud IPs.
+        fallbacks = ["best", "18", "22", normalized]
     else:
         fallbacks = [normalized]
         height_match = re.search(r"height<=(\d+)", normalized)
@@ -870,18 +873,36 @@ def _attach_youtube_direct_urls(
                 )
         return resolve_cache[selector]
 
-    best_direct = resolve_selector("best[ext=mp4]/best")
-    hd_direct = resolve_selector("best[height<=720]/best")
+    best_direct = resolve_selector("best")
+    hd_direct = resolve_selector("best[height<=720]/best") if MAX_YOUTUBE_ATTACH_RESOLVE_CALLS > 1 else None
 
     for fmt in still_need:
         format_id = fmt.get("formatId") or ""
-        if "height<=720" in format_id and hd_direct:
+        if hd_direct and "height<=720" in format_id:
             fmt["url"] = hd_direct
         elif best_direct:
             fmt["url"] = best_direct
         else:
             continue
         fmt["needsMerge"] = False
+
+
+def resolve_download_target(page_url: str, format_selector: str, api_base_url: str, title: str) -> dict[str, Any]:
+    """Return a direct CDN URL when possible, otherwise the server download URL."""
+    if _needs_server_proxy_download(page_url):
+        return {
+            "direct": False,
+            "url": _build_download_url(api_base_url, page_url, format_selector, title),
+        }
+
+    direct = _get_direct_url_once(page_url, format_selector, timeout_sec=60)
+    if direct:
+        return {"direct": True, "url": direct}
+
+    return {
+        "direct": False,
+        "url": _build_download_url(api_base_url, page_url, format_selector, title),
+    }
 
 
 def _download_format_fallbacks(page_url: str, format_selector: str) -> list[str]:

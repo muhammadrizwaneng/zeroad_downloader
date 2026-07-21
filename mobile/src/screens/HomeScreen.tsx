@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FormatCard, ResultHeader } from '../components/FormatCard';
 import { API_BASE_URL } from '../config';
 import { SHARE_INTENT_HINT, useSharedUrl } from '../hooks/useSharedUrl';
-import { checkBackendHealth, extractMedia, wakeBackend } from '../services/api';
+import { checkBackendHealth, extractMedia, resolveDownloadUrl, wakeBackend } from '../services/api';
 import type { ExtractResult, MediaFormat } from '../types';
 import { getPlatformLabel } from '../utils/url';
 
@@ -29,6 +29,8 @@ export function HomeScreen() {
   const [result, setResult] = useState<ExtractResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sharedFrom, setSharedFrom] = useState<string | null>(null);
+
+  const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
     checkBackendHealth().then(setBackendOnline);
@@ -71,30 +73,47 @@ export function HomeScreen() {
 
   useSharedUrl(handleSharedUrl);
 
-  const handleDownload = useCallback((format: MediaFormat) => {
-    const isServerDownload =
-      format.needsMerge ||
-      format.url.includes('/api/download') ||
-      /tiktok\.com|instagram\.com/i.test(format.url);
-    const mergeNote = isServerDownload
-      ? '\n\nThe file will download through the ZeroAds server (required for TikTok/Instagram).'
-      : '';
-    Alert.alert(
-      'Start download',
-      `Open ${format.quality} ${format.type} (${format.ext})?${mergeNote}`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Open link',
-          onPress: () => {
-            Linking.openURL(format.url).catch(() => {
-              Alert.alert('Error', 'Could not open the download URL.');
-            });
+  const handleDownload = useCallback(
+    (format: MediaFormat) => {
+      if (!result?.webpageUrl) {
+        return;
+      }
+
+      const isTikTokOrInstagram = /tiktok\.com|instagram\.com/i.test(result.webpageUrl);
+      const isServerDownload = isTikTokOrInstagram || format.url.includes('/api/download');
+      const mergeNote = isTikTokOrInstagram
+        ? '\n\nThe file will download through the ZeroAds server (required for TikTok/Instagram).'
+        : isServerDownload
+          ? '\n\nResolving direct download link…'
+          : '';
+
+      Alert.alert(
+        'Start download',
+        `Open ${format.quality} ${format.type} (${format.ext})?${mergeNote}`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Open link',
+            onPress: async () => {
+              setDownloading(true);
+              try {
+                const openUrl = await resolveDownloadUrl(result.webpageUrl, format);
+                await Linking.openURL(openUrl);
+              } catch (err) {
+                Alert.alert(
+                  'Error',
+                  err instanceof Error ? err.message : 'Could not open the download URL.',
+                );
+              } finally {
+                setDownloading(false);
+              }
+            },
           },
-        },
-      ],
-    );
-  }, []);
+        ],
+      );
+    },
+    [result],
+  );
 
   return (
     <KeyboardAvoidingView
@@ -192,6 +211,12 @@ export function HomeScreen() {
           </View>
         ) : null}
       </ScrollView>
+      {downloading ? (
+        <View style={styles.downloadOverlay}>
+          <ActivityIndicator color="#ffffff" size="large" />
+          <Text style={styles.downloadOverlayText}>Getting download link…</Text>
+        </View>
+      ) : null}
     </KeyboardAvoidingView>
   );
 }
@@ -317,5 +342,16 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  downloadOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 18, 25, 0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  downloadOverlayText: {
+    color: '#e2e8f0',
+    fontSize: 16,
   },
 });

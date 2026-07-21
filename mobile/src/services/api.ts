@@ -110,6 +110,39 @@ export async function extractMedia(url: string, attempt = 1): Promise<ExtractRes
   }
 }
 
+const RESOLVE_TIMEOUT_MS = 90_000;
+
+export async function resolveDownloadUrl(
+  pageUrl: string,
+  format: { formatId: string; url: string },
+): Promise<string> {
+  if (format.url.includes('googlevideo.com')) {
+    return format.url;
+  }
+  if (!format.url.includes('/api/download') && !format.url.includes('zeroads-api.onrender.com')) {
+    return format.url;
+  }
+
+  const params = new URLSearchParams({
+    url: pageUrl,
+    format: format.formatId,
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RESOLVE_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/resolve?${params.toString()}`, {
+      signal: controller.signal,
+    });
+    const data = (await response.json()) as { url?: string; direct?: boolean; error?: string };
+    if (!response.ok) {
+      throw new Error(data.error || 'Could not resolve download URL.');
+    }
+    return data.url || format.url;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function checkBackendHealth(): Promise<boolean> {
   try {
     const controller = new AbortController();
