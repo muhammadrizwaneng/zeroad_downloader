@@ -346,7 +346,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   downloadOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(15, 18, 25, 0.85)',
     alignItems: 'center',
     justifyContent: 'center',
