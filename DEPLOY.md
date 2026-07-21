@@ -159,3 +159,67 @@ Use the dashboard (recommended). Render CLI is optional; Blueprint uses repo roo
 | Mobile can't reach API | Use Render **HTTPS** URL in `config.ts`, not `localhost` |
 | APK button missing on site | Set `NEXT_PUBLIC_APK_URL` in Vercel and redeploy |
 | CORS errors | Set `CORS_ORIGIN=*` or your Vercel domain on Render |
+| YouTube “Sign in to confirm you're not a bot” | Redeploy Render (Docker now includes PO token provider). Cookies optional. |
+
+---
+
+## 5. YouTube on Render (automatic fix)
+
+The Docker image now runs a **PO token provider** (`bgutil`) alongside the API. This bypasses YouTube bot checks on datacenter IPs — **no cookies required** for most cases.
+
+**You must push the latest code and redeploy Render:**
+
+```bash
+git add backend-python/
+git commit -m "Add YouTube PO token provider for Render"
+git push
+```
+
+Then in Render → **Manual Deploy** → Deploy latest commit.
+
+Wait for the build to finish (first build may take ~5–10 min — installs Node + bgutil).
+
+Test:
+
+```bash
+curl -X POST https://zeroads-api.onrender.com/api/extract \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://www.youtube.com/shorts/F6Yqq2FEn70"}'
+```
+
+### Optional: cookies as backup
+
+If YouTube still fails after redeploy, add `YTDLP_COOKIES` (see old steps below). Usually not needed once PO provider is running.
+
+<details>
+<summary>Manual cookie export (backup only)</summary>
+
+1. Install **Get cookies.txt LOCALLY** in normal Chrome → enable **Allow in incognito**
+2. Incognito → sign in to YouTube (2nd Gmail) → export cookies → close incognito
+3. Render → Environment → `YTDLP_COOKIES` = full file contents → redeploy
+
+</details>
+
+---
+
+## 6. Alternative: run backend from home (Cloudflare Tunnel)
+
+If Render still fails, run the API on your Mac (residential IP — YouTube works without cookies):
+
+```bash
+# Terminal 1 — API
+cd backend-python
+pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 8000
+
+# Terminal 2 — public HTTPS URL (install: brew install cloudflared)
+cloudflared tunnel --url http://localhost:8000
+```
+
+Copy the `https://xxxx.trycloudflare.com` URL into `mobile/src/config.ts`:
+
+```typescript
+const PRODUCTION_API_URL = 'https://xxxx.trycloudflare.com';
+```
+
+Rebuild the APK. Downside: your Mac must stay on; URL changes each time unless you set up a named tunnel.

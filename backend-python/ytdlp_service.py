@@ -21,6 +21,82 @@ FAST_ARGS = [
     "20",
 ]
 
+# Try alternate YouTube clients when the default is blocked on cloud IPs.
+YOUTUBE_CLIENT_FALLBACKS: list[list[str]] = [
+    [],
+    ["--extractor-args", "youtube:player_client=android_vr"],
+    ["--extractor-args", "youtube:player_client=tv,web"],
+    ["--extractor-args", "youtube:player_client=web_embedded"],
+    ["--extractor-args", "youtube:player_client=ios,web"],
+]
+
+_cookies_file_path: str | None = None
+
+
+def _is_youtube_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return host.endswith("youtube.com") or host == "youtu.be" or host.endswith(".youtu.be")
+
+
+def _ensure_cookies_file() -> str | None:
+    """Write YTDLP_COOKIES env content to a temp Netscape cookie file for yt-dlp."""
+    global _cookies_file_path
+
+    configured_path = os.environ.get("YTDLP_COOKIES_PATH", "").strip()
+    if configured_path and os.path.isfile(configured_path):
+        return configured_path
+
+    cookies_content = os.environ.get("YTDLP_COOKIES", "").strip()
+    if not cookies_content:
+        return None
+
+    if _cookies_file_path and os.path.isfile(_cookies_file_path):
+        return _cookies_file_path
+
+    handle, path = tempfile.mkstemp(prefix="ytdlp-cookies-", suffix=".txt")
+    with os.fdopen(handle, "w", encoding="utf-8") as cookies_file:
+        cookies_file.write(cookies_content)
+        if not cookies_content.endswith("\n"):
+            cookies_file.write("\n")
+
+    _cookies_file_path = path
+    return path
+
+
+def _base_ytdlp_args() -> list[str]:
+    args = list(FAST_ARGS)
+    cookies_path = _ensure_cookies_file()
+    if cookies_path:
+        args.extend(["--cookies", cookies_path])
+    return args
+
+
+def _youtube_pot_args() -> list[str]:
+    pot_url = os.environ.get("YTDLP_POT_PROVIDER_URL", "http://127.0.0.1:4416").strip()
+    if not pot_url:
+        return []
+    return ["--extractor-args", f"youtubepot-bgutilhttp:base_url={pot_url}"]
+
+
+def _youtube_client_fallbacks() -> list[list[str]]:
+    return YOUTUBE_CLIENT_FALLBACKS
+
+
+def _is_youtube_bot_block(message: str) -> bool:
+    lowered = message.lower()
+    return "sign in to confirm" in lowered or "not a bot" in lowered
+
+
+def _friendly_ytdlp_error(message: str) -> str:
+    if _is_youtube_bot_block(message):
+        return (
+            "YouTube blocked this download from the server. "
+            "Add fresh YouTube cookies to Render (see DEPLOY.md), or try TikTok/Instagram instead."
+        )
+    if len(message) > 280:
+        return message[:277] + "..."
+    return message
+
 MERGE_HEIGHTS = [1080, 720, 480, 360]
 
 
@@ -409,13 +485,35 @@ def _run_ytdlp_json(args: list[str]) -> dict[str, Any]:
         raise RuntimeError("Failed to parse yt-dlp output.") from exc
 
 
+def _extract_ytdlp_json(url: str, extra_args: list[str] | None = None) -> dict[str, Any]:
+    youtube_args = _youtube_pot_args() if _is_youtube_url(url) else []
+    args = [*_base_ytdlp_args(), *youtube_args, *(extra_args or []), "--dump-single-json", url]
+    return _run_ytdlp_json(args)
+
+
 def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
     normalized_url = normalize_media_url(url)
-    data = _run_ytdlp_json([*FAST_ARGS, "--dump-single-json", normalized_url])
+    client_fallbacks = _youtube_client_fallbacks() if _is_youtube_url(normalized_url) else [[]]
+
+    data: dict[str, Any] | None = None
+    last_error: RuntimeError | None = None
+
+    for client_args in client_fallbacks:
+        try:
+            data = _extract_ytdlp_json(normalized_url, client_args)
+            break
+        except RuntimeError as exc:
+            last_error = exc
+            if not _is_youtube_url(normalized_url) or not _is_youtube_bot_block(str(exc)):
+                raise
+
+    if data is None:
+        raise RuntimeError(_friendly_ytdlp_error(str(last_error or "YouTube extraction failed.")))
+
     formats = _build_format_map(data, api_base_url)
 
     if not formats:
-        data = _run_ytdlp_json([*FAST_ARGS, "-f", "b", "--dump-single-json", normalized_url])
+        data = _extract_ytdlp_json(normalized_url, ["-f", "b"])
         formats = _collect_from_selected_metadata(data, api_base_url)
         _add_universal_fallback(data, api_base_url, formats)
 
@@ -445,14 +543,14 @@ def merge_and_get_path(url: str, format_selector: str, title: str) -> tuple[Path
 
     _run_ytdlp(
         [
+            *_base_ytdlp_args(),
+            *(_youtube_pot_args() if _is_youtube_url(url) else []),
             "-f",
             format_selector,
             "--merge-output-format",
             "mp4",
             "-o",
             output_template,
-            "--no-playlist",
-            "--no-warnings",
             url,
         ],
         timeout_sec=MERGE_TIMEOUT_SEC,
