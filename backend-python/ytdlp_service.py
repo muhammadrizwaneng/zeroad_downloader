@@ -402,10 +402,10 @@ def _add_youtube_quality_presets(
     page_url = data.get("webpage_url") or ""
     title = data.get("title") or "video"
     presets: list[tuple[str, str, bool]] = [
-        ("Best available", "best", False),
-        ("1080p", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best", True),
-        ("720p", "bestvideo[height<=720]+bestaudio/best[height<=720]/best", True),
-        ("480p", "bestvideo[height<=480]+bestaudio/best[height<=480]/best", True),
+        ("Best available", "best[ext=mp4]/best", False),
+        ("1080p", "best[height<=1080][ext=mp4]/best[ext=mp4]/best", False),
+        ("720p", "best[height<=720][ext=mp4]/best[ext=mp4]/best", False),
+        ("480p", "best[height<=480][ext=mp4]/best[ext=mp4]/best", False),
     ]
 
     for quality, format_id, needs_merge in presets:
@@ -641,10 +641,13 @@ def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
 
 
 def _normalize_download_format(format_selector: str) -> str:
-    """Merge/selectors like 137+140 need server merge — use single-file best for CDN redirect."""
-    lower = format_selector.lower()
-    if "+" in format_selector or "bestvideo" in lower or "*" in lower:
-        return "best"
+    """Convert legacy merge selectors to single-file mp4 formats."""
+    if "+" in format_selector or "bestvideo" in format_selector.lower():
+        height_match = re.search(r"height<=(\d+)", format_selector)
+        if height_match:
+            height = height_match.group(1)
+            return f"best[height<={height}][ext=mp4]/best[ext=mp4]/best"
+        return "best[ext=mp4]/best"
     return format_selector
 
 
@@ -666,26 +669,39 @@ def _get_direct_url_once(url: str, format_selector: str) -> str | None:
             timeout_sec=90,
         )
         lines = [line.strip() for line in stdout.splitlines() if line.strip().startswith("http")]
-        if len(lines) == 1:
-            return lines[0]
+        if len(lines) >= 1:
+            mp4_line = next(
+                (line for line in lines if "googlevideo.com/videoplayback" in line),
+                None,
+            )
+            return mp4_line or lines[0]
     except RuntimeError:
-        if selector != "best":
-            return _get_direct_url_once(url, "best")
+        if selector != "best[ext=mp4]/best":
+            return _get_direct_url_once(url, "best[ext=mp4]/best")
     return None
 
 
 def _attach_youtube_direct_urls(formats: dict[str, dict[str, Any]], page_url: str) -> None:
-    """Resolve CDN URL once at extract time so Download skips server yt-dlp/POT."""
-    direct_best = _get_direct_url_once(page_url, "best")
-    if not direct_best:
-        return
+    """Resolve CDN URLs at extract time — Download opens googlevideo.com directly."""
+    seen_selectors: set[str] = set()
 
     for fmt in formats.values():
-        quality = (fmt.get("quality") or "").lower()
-        format_id = (fmt.get("formatId") or "").lower()
-        if quality == "best available" or format_id in {"best", "b"}:
-            fmt["url"] = direct_best
-            fmt["needsMerge"] = False
+        format_id = fmt.get("formatId") or "best[ext=mp4]/best"
+        if format_id in seen_selectors:
+            continue
+        seen_selectors.add(format_id)
+
+        direct = _get_direct_url_once(page_url, format_id)
+        if not direct:
+            continue
+
+        quality_key = (fmt.get("quality") or "").lower()
+        for target in formats.values():
+            if (target.get("formatId") or "") == format_id or (
+                quality_key and (target.get("quality") or "").lower() == quality_key
+            ):
+                target["url"] = direct
+                target["needsMerge"] = False
 
 
 def _safe_filename(title: str) -> str:
