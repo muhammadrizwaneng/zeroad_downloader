@@ -78,7 +78,7 @@ def extract(request: Request, body: ExtractRequest):
 
 @app.get("/api/extract/status/{job_id}")
 @limiter.limit("60/minute")
-def extract_status(job_id: str):
+def extract_status(request: Request, job_id: str):
     job = get_job(job_id)
     if not job:
         return JSONResponse(status_code=404, content={"error": "Job not found or expired."})
