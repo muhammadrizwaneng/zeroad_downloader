@@ -715,15 +715,45 @@ def _pick_direct_url_from_formats(
     return best_entry["url"]
 
 
-def _youtube_format_fallbacks(format_selector: str) -> list[str]:
+def _pick_direct_url_by_height(
+    formats: list[dict[str, Any]],
+    max_height: int | None = None,
+) -> str | None:
+    """Best combined progressive URL at or below max_height (from extract JSON only)."""
+    candidates: list[dict[str, Any]] = []
+    for entry in formats:
+        if not entry.get("url") or not entry.get("format_id"):
+            continue
+        if not _has_video_and_audio(entry) or not _is_direct_url(entry):
+            continue
+        height = entry.get("height") or 0
+        if max_height is not None and height > max_height:
+            continue
+        candidates.append(entry)
+
+    if not candidates:
+        return None
+
+    best_entry = max(
+        candidates,
+        key=lambda entry: (
+            entry.get("height") or 0,
+            entry.get("filesize") or entry.get("filesize_approx") or 0,
+        ),
+    )
+    return best_entry["url"]
+def _youtube_format_fallbacks(format_selector: str, fast: bool = False) -> list[str]:
     normalized = _normalize_download_format(format_selector)
-    fallbacks = [normalized]
-    height_match = re.search(r"height<=(\d+)", normalized)
-    if height_match:
-        height = height_match.group(1)
-        fallbacks.append(f"best[height<={height}]/best")
-        fallbacks.append(f"best[height<={height}]")
-    fallbacks.extend(["best[ext=mp4]/best", "best", "18", "22", "b"])
+    if fast:
+        fallbacks = [normalized, "best[ext=mp4]/best", "best", "18"]
+    else:
+        fallbacks = [normalized]
+        height_match = re.search(r"height<=(\d+)", normalized)
+        if height_match:
+            height = height_match.group(1)
+            fallbacks.append(f"best[height<={height}]/best")
+            fallbacks.append(f"best[height<={height}]")
+        fallbacks.extend(["best[ext=mp4]/best", "best", "18", "22", "b"])
 
     seen: set[str] = set()
     unique: list[str] = []
@@ -745,14 +775,14 @@ def _normalize_download_format(format_selector: str) -> str:
     return format_selector
 
 
-def _get_direct_url_once(url: str, format_selector: str, timeout_sec: int = 45) -> str | None:
-    """Resolve CDN URL via yt-dlp -g with progressive format fallbacks."""
+def _get_direct_url_once(url: str, format_selector: str, timeout_sec: int = 30) -> str | None:
+    """Resolve CDN URL via yt-dlp -g (download endpoint only — not used during extract)."""
     youtube_args = _youtube_extractor_args(None) if _is_youtube_url(url) else []
     extra: list[str] = []
     if _is_youtube_url(url):
         extra.append("--ignore-no-formats-error")
 
-    for selector in _youtube_format_fallbacks(format_selector):
+    for selector in _youtube_format_fallbacks(format_selector, fast=True):
         try:
             stdout = _run_ytdlp(
                 [
@@ -797,15 +827,8 @@ def _attach_youtube_direct_urls(
     page_url: str,
     extract_data: dict[str, Any],
 ) -> None:
-    """Resolve googlevideo CDN URLs — JSON first, then one cached -g call per format id."""
+    """Attach googlevideo URLs from extract JSON only — zero extra yt-dlp/POT calls."""
     raw_formats = extract_data.get("formats") or []
-    resolved: dict[str, str | None] = {}
-
-    def resolve(format_id: str) -> str | None:
-        if format_id not in resolved:
-            picked = _pick_direct_url_from_formats(raw_formats, format_id)
-            resolved[format_id] = picked or _get_direct_url_once(page_url, format_id, timeout_sec=60)
-        return resolved[format_id]
 
     for fmt in formats.values():
         current_url = fmt.get("url") or ""
@@ -814,7 +837,12 @@ def _attach_youtube_direct_urls(
             continue
 
         format_id = fmt.get("formatId") or "best[ext=mp4]/best"
-        direct = resolve(format_id)
+        direct = _pick_direct_url_from_formats(raw_formats, format_id)
+        if not direct:
+            height_match = re.search(r"height<=(\d+)", format_id)
+            max_height = int(height_match.group(1)) if height_match else None
+            direct = _pick_direct_url_by_height(raw_formats, max_height)
+
         if direct:
             fmt["url"] = direct
             fmt["needsMerge"] = False
@@ -823,7 +851,7 @@ def _attach_youtube_direct_urls(
 def _download_format_fallbacks(page_url: str, format_selector: str) -> list[str]:
     selector = _normalize_download_format(format_selector)
     if _is_youtube_url(page_url):
-        return _youtube_format_fallbacks(selector)
+        return _youtube_format_fallbacks(selector, fast=True)
     seen: set[str] = set()
     unique: list[str] = []
     for item in [selector, "best"]:
@@ -890,18 +918,8 @@ def _safe_filename(title: str) -> str:
 
 
 def resolve_direct_download_url(url: str, format_selector: str) -> str | None:
-    """Get a direct CDN URL — try -g first, then reuse extract JSON as fallback."""
-    direct = _get_direct_url_once(url, format_selector)
-    if direct:
-        return direct
-
-    if _is_youtube_url(url):
-        try:
-            data = _extract_ytdlp_json(url, None)
-            return _pick_direct_url_from_formats(data.get("formats") or [], format_selector)
-        except RuntimeError:
-            return None
-    return None
+    """Get a direct CDN URL via yt-dlp -g (used when user taps Download)."""
+    return _get_direct_url_once(url, format_selector)
 
 
 def _friendly_download_error(message: str) -> str:
