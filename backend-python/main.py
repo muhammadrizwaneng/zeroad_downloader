@@ -14,13 +14,13 @@ from extract_jobs import create_job, get_job
 from ytdlp_service import (
     _friendly_download_error,
     _friendly_ytdlp_error,
+    _get_direct_url_once,
     _needs_server_proxy_download,
     _safe_filename,
     extract_media,
     iter_ytdlp_download,
     merge_and_get_path,
     normalize_media_url,
-    resolve_direct_download_url,
 )
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -108,7 +108,7 @@ def download(request: Request, url: HttpUrl, format: str, title: str = "video"):
     try:
         # YouTube: redirect straight to googlevideo when possible.
         if not _needs_server_proxy_download(page_url):
-            direct_url = resolve_direct_download_url(page_url, format)
+            direct_url = _get_direct_url_once(page_url, format, timeout_sec=8)
             if direct_url:
                 return RedirectResponse(direct_url, status_code=302)
 

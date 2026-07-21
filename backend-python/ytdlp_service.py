@@ -12,6 +12,8 @@ from urllib.parse import urlencode, urlparse, urlunparse
 
 EXTRACT_TIMEOUT_SEC = 240
 MERGE_TIMEOUT_SEC = 300
+YOUTUBE_ATTACH_RESOLVE_TIMEOUT = 25
+MAX_YOUTUBE_ATTACH_RESOLVE_CALLS = 2
 YTDLP_BIN = os.environ.get("YTDLP_PATH", "yt-dlp")
 
 FAST_ARGS = [
@@ -745,7 +747,7 @@ def _pick_direct_url_by_height(
 def _youtube_format_fallbacks(format_selector: str, fast: bool = False) -> list[str]:
     normalized = _normalize_download_format(format_selector)
     if fast:
-        fallbacks = [normalized, "best[ext=mp4]/best", "best", "18"]
+        fallbacks = [normalized, "best"]
     else:
         fallbacks = [normalized]
         height_match = re.search(r"height<=(\d+)", normalized)
@@ -827,7 +829,7 @@ def _attach_youtube_direct_urls(
     page_url: str,
     extract_data: dict[str, Any],
 ) -> None:
-    """Attach googlevideo URLs from extract JSON only — zero extra yt-dlp/POT calls."""
+    """Attach googlevideo URLs — JSON first, then at most 2 quick -g calls for Render cloud IPs."""
     raw_formats = extract_data.get("formats") or []
 
     for fmt in formats.values():
@@ -846,6 +848,40 @@ def _attach_youtube_direct_urls(
         if direct:
             fmt["url"] = direct
             fmt["needsMerge"] = False
+
+    still_need = [fmt for fmt in formats.values() if _url_is_api_download(fmt.get("url", ""))]
+    if not still_need:
+        return
+
+    resolve_cache: dict[str, str | None] = {}
+    resolve_calls = 0
+
+    def resolve_selector(selector: str) -> str | None:
+        nonlocal resolve_calls
+        if selector not in resolve_cache:
+            if resolve_calls >= MAX_YOUTUBE_ATTACH_RESOLVE_CALLS:
+                resolve_cache[selector] = None
+            else:
+                resolve_calls += 1
+                resolve_cache[selector] = _get_direct_url_once(
+                    page_url,
+                    selector,
+                    timeout_sec=YOUTUBE_ATTACH_RESOLVE_TIMEOUT,
+                )
+        return resolve_cache[selector]
+
+    best_direct = resolve_selector("best[ext=mp4]/best")
+    hd_direct = resolve_selector("best[height<=720]/best")
+
+    for fmt in still_need:
+        format_id = fmt.get("formatId") or ""
+        if "height<=720" in format_id and hd_direct:
+            fmt["url"] = hd_direct
+        elif best_direct:
+            fmt["url"] = best_direct
+        else:
+            continue
+        fmt["needsMerge"] = False
 
 
 def _download_format_fallbacks(page_url: str, format_selector: str) -> list[str]:
