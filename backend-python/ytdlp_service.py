@@ -623,7 +623,11 @@ def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
         _add_universal_fallback(data, api_base_url, formats)
 
     if _is_youtube_url(normalized_url):
-        _attach_youtube_direct_urls(formats, data.get("webpage_url") or normalized_url)
+        _attach_youtube_direct_urls(
+            formats,
+            data.get("webpage_url") or normalized_url,
+            data,
+        )
 
     result_formats = _finalize_formats(formats)
     if not result_formats:
@@ -640,6 +644,74 @@ def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
     }
 
 
+def _url_is_api_download(url: str) -> bool:
+    return "/api/download" in url
+
+
+def _pick_direct_url_from_formats(
+    formats: list[dict[str, Any]],
+    format_selector: str,
+) -> str | None:
+    """Pick a progressive CDN URL already returned by extract — no extra yt-dlp/POT."""
+    normalized = _normalize_download_format(format_selector)
+
+    for entry in formats:
+        if entry.get("format_id") == format_selector and entry.get("url") and _is_direct_url(entry):
+            return entry["url"]
+
+    height_limit: int | None = None
+    height_match = re.search(r"height<=(\d+)", normalized)
+    if height_match:
+        height_limit = int(height_match.group(1))
+
+    require_mp4 = "ext=mp4" in normalized.lower()
+
+    candidates: list[dict[str, Any]] = []
+    for entry in formats:
+        if not entry.get("url") or not entry.get("format_id"):
+            continue
+        if not _has_video_and_audio(entry) or not _is_direct_url(entry):
+            continue
+        height = entry.get("height") or 0
+        if height_limit is not None and height > height_limit:
+            continue
+        ext = (entry.get("ext") or "").lower()
+        if require_mp4 and ext not in {"mp4", "m4a", "3gp"}:
+            continue
+        candidates.append(entry)
+
+    if not candidates:
+        return None
+
+    best_entry = max(
+        candidates,
+        key=lambda entry: (
+            entry.get("height") or 0,
+            entry.get("filesize") or entry.get("filesize_approx") or 0,
+        ),
+    )
+    return best_entry["url"]
+
+
+def _youtube_format_fallbacks(format_selector: str) -> list[str]:
+    normalized = _normalize_download_format(format_selector)
+    fallbacks = [normalized]
+    height_match = re.search(r"height<=(\d+)", normalized)
+    if height_match:
+        height = height_match.group(1)
+        fallbacks.append(f"best[height<={height}]/best")
+        fallbacks.append(f"best[height<={height}]")
+    fallbacks.extend(["best[ext=mp4]/best", "best", "18", "22", "b"])
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in fallbacks:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
 def _normalize_download_format(format_selector: str) -> str:
     """Convert legacy merge selectors to single-file mp4 formats."""
     if "+" in format_selector or "bestvideo" in format_selector.lower():
@@ -652,56 +724,70 @@ def _normalize_download_format(format_selector: str) -> str:
 
 
 def _get_direct_url_once(url: str, format_selector: str) -> str | None:
-    """Single yt-dlp -g call (one POT request). Returns direct CDN URL or None."""
-    selector = _normalize_download_format(format_selector)
-    try:
-        youtube_args = _youtube_extractor_args(None) if _is_youtube_url(url) else []
-        stdout = _run_ytdlp(
-            [
-                *_base_ytdlp_args(),
-                *youtube_args,
-                "-f",
-                selector,
-                "-g",
-                "--no-playlist",
-                url,
-            ],
-            timeout_sec=90,
-        )
-        lines = [line.strip() for line in stdout.splitlines() if line.strip().startswith("http")]
-        if len(lines) >= 1:
-            mp4_line = next(
-                (line for line in lines if "googlevideo.com/videoplayback" in line),
-                None,
+    """Resolve CDN URL via yt-dlp -g with progressive format fallbacks."""
+    youtube_args = _youtube_extractor_args(None) if _is_youtube_url(url) else []
+    extra: list[str] = []
+    if _is_youtube_url(url):
+        extra.append("--ignore-no-formats-error")
+
+    for selector in _youtube_format_fallbacks(format_selector):
+        try:
+            stdout = _run_ytdlp(
+                [
+                    *_base_ytdlp_args(),
+                    *youtube_args,
+                    *extra,
+                    "-f",
+                    selector,
+                    "-g",
+                    "--no-playlist",
+                    url,
+                ],
+                timeout_sec=90,
             )
-            return mp4_line or lines[0]
-    except RuntimeError:
-        if selector != "best[ext=mp4]/best":
-            return _get_direct_url_once(url, "best[ext=mp4]/best")
+            lines = [line.strip() for line in stdout.splitlines() if line.strip().startswith("http")]
+            if lines:
+                mp4_line = next(
+                    (line for line in lines if "googlevideo.com/videoplayback" in line),
+                    None,
+                )
+                return mp4_line or lines[0]
+        except RuntimeError:
+            continue
     return None
 
 
-def _attach_youtube_direct_urls(formats: dict[str, dict[str, Any]], page_url: str) -> None:
-    """Resolve CDN URLs at extract time — Download opens googlevideo.com directly."""
-    seen_selectors: set[str] = set()
+def _attach_youtube_direct_urls(
+    formats: dict[str, dict[str, Any]],
+    page_url: str,
+    extract_data: dict[str, Any],
+) -> None:
+    """Resolve CDN URLs at extract time — prefer JSON URLs, minimal extra yt-dlp calls."""
+    raw_formats = extract_data.get("formats") or []
+    pending_selectors: dict[str, list[dict[str, Any]]] = {}
 
     for fmt in formats.values():
-        format_id = fmt.get("formatId") or "best[ext=mp4]/best"
-        if format_id in seen_selectors:
+        current_url = fmt.get("url") or ""
+        if current_url and not _url_is_api_download(current_url):
+            fmt["needsMerge"] = False
             continue
-        seen_selectors.add(format_id)
 
+        format_id = fmt.get("formatId") or "best[ext=mp4]/best"
+        direct = _pick_direct_url_from_formats(raw_formats, format_id)
+        if direct:
+            fmt["url"] = direct
+            fmt["needsMerge"] = False
+            continue
+
+        pending_selectors.setdefault(format_id, []).append(fmt)
+
+    for format_id, targets in pending_selectors.items():
         direct = _get_direct_url_once(page_url, format_id)
         if not direct:
             continue
-
-        quality_key = (fmt.get("quality") or "").lower()
-        for target in formats.values():
-            if (target.get("formatId") or "") == format_id or (
-                quality_key and (target.get("quality") or "").lower() == quality_key
-            ):
-                target["url"] = direct
-                target["needsMerge"] = False
+        for target in targets:
+            target["url"] = direct
+            target["needsMerge"] = False
 
 
 def _safe_filename(title: str) -> str:
@@ -710,8 +796,18 @@ def _safe_filename(title: str) -> str:
 
 
 def resolve_direct_download_url(url: str, format_selector: str) -> str | None:
-    """Get a direct CDN URL via yt-dlp -g (single attempt)."""
-    return _get_direct_url_once(url, format_selector)
+    """Get a direct CDN URL — try -g first, then reuse extract JSON as fallback."""
+    direct = _get_direct_url_once(url, format_selector)
+    if direct:
+        return direct
+
+    if _is_youtube_url(url):
+        try:
+            data = _extract_ytdlp_json(url, None)
+            return _pick_direct_url_from_formats(data.get("formats") or [], format_selector)
+        except RuntimeError:
+            return None
+    return None
 
 
 def _friendly_download_error(message: str) -> str:
@@ -759,7 +855,7 @@ def merge_and_get_path(url: str, format_selector: str, title: str) -> tuple[Path
     selector = _normalize_download_format(format_selector)
     last_error: RuntimeError | None = None
 
-    for candidate in (selector, "best"):
+    for candidate in _youtube_format_fallbacks(selector):
         try:
             _run_ytdlp_merge(url, candidate, output_template, None)
             files = [path for path in Path(tmp_dir.name).iterdir() if not path.name.endswith(".part")]
@@ -768,7 +864,7 @@ def merge_and_get_path(url: str, format_selector: str, title: str) -> tuple[Path
             raise RuntimeError("Merge finished but no output file was created.")
         except RuntimeError as exc:
             last_error = exc
-            if candidate == "best":
+            if candidate == _youtube_format_fallbacks(selector)[-1]:
                 break
 
     tmp_dir.cleanup()
