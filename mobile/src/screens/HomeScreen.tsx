@@ -46,6 +46,8 @@ export function HomeScreen() {
     setSharedFrom(getPlatformLabel(trimmed));
 
     try {
+      // Wake Render (free tier sleeps after ~15 min idle).
+      await checkBackendHealth();
       const data = await extractMedia(trimmed);
       setResult(data);
     } catch (err) {

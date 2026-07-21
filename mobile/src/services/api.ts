@@ -1,7 +1,7 @@
 import { API_BASE_URL } from '../config';
 import type { ExtractError, ExtractResult } from '../types';
 
-const EXTRACT_TIMEOUT_MS = 120_000;
+const EXTRACT_TIMEOUT_MS = 300_000;
 
 export async function extractMedia(url: string): Promise<ExtractResult> {
   const controller = new AbortController();
@@ -26,7 +26,9 @@ export async function extractMedia(url: string): Promise<ExtractResult> {
     return data as ExtractResult;
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('Extraction timed out. The server may still be processing — try again.');
+      throw new Error(
+        'Extraction timed out. The server may still be waking up — wait a few seconds and tap Extract again.',
+      );
     }
     throw err;
   } finally {

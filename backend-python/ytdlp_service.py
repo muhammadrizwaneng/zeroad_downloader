@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
-EXTRACT_TIMEOUT_SEC = 90
+EXTRACT_TIMEOUT_SEC = 120
 MERGE_TIMEOUT_SEC = 300
 YTDLP_BIN = os.environ.get("YTDLP_PATH", "yt-dlp")
 
@@ -16,18 +16,15 @@ FAST_ARGS = [
     "--no-playlist",
     "--no-warnings",
     "--extractor-retries",
-    "2",
+    "1",
     "--socket-timeout",
-    "20",
+    "15",
 ]
 
-# Try alternate YouTube clients when the default is blocked on cloud IPs.
+# Fast fallbacks only — each quick failure tries the next client (never on timeout).
 YOUTUBE_PLAYER_CLIENTS: list[str | None] = [
     "android_vr,tv,web",
     "tv,web",
-    "web_embedded",
-    "ios,web",
-    None,
 ]
 
 _cookies_file_path: str | None = None
@@ -99,7 +96,13 @@ def _is_youtube_format_error(message: str) -> bool:
     return "requested format is not available" in lowered or "no video formats" in lowered
 
 
+def _is_extract_timeout(message: str) -> bool:
+    return "timed out" in message.lower()
+
+
 def _is_retryable_youtube_error(message: str) -> bool:
+    if _is_extract_timeout(message):
+        return False
     return _is_youtube_bot_block(message) or _is_youtube_format_error(message)
 
 
@@ -111,6 +114,11 @@ def _friendly_ytdlp_error(message: str) -> str:
         )
     if _is_youtube_format_error(message):
         return "YouTube formats could not be read for this video. Try again or use a different link."
+    if _is_extract_timeout(message):
+        return (
+            "Extraction timed out. On Render free tier the server may be waking up — "
+            "wait a few seconds and tap Extract again."
+        )
     if len(message) > 280:
         return message[:277] + "..."
     return message
@@ -510,7 +518,7 @@ def _extract_ytdlp_json(url: str, player_client: str | None = None) -> dict[str,
 
 def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
     normalized_url = normalize_media_url(url)
-    client_fallbacks = _youtube_client_fallbacks() if _is_youtube_url(normalized_url) else [[]]
+    client_fallbacks = _youtube_client_fallbacks() if _is_youtube_url(normalized_url) else [None]
 
     data: dict[str, Any] | None = None
     last_error: RuntimeError | None = None
