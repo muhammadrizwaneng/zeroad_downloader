@@ -21,10 +21,11 @@ FAST_ARGS = [
     "15",
 ]
 
-# Fast fallbacks only — each quick failure tries the next client (never on timeout).
+# Default yt-dlp client first; avoid tv-only (breaks on DRM trailers).
 YOUTUBE_PLAYER_CLIENTS: list[str | None] = [
+    None,
     "android_vr,tv,web",
-    "tv,web",
+    "mweb",
 ]
 
 _cookies_file_path: str | None = None
@@ -505,14 +506,20 @@ def _run_ytdlp(args: list[str], timeout_sec: int = EXTRACT_TIMEOUT_SEC) -> str:
 
 def _run_ytdlp_json(args: list[str]) -> dict[str, Any]:
     try:
-        return json.loads(_run_ytdlp(args))
+        parsed = json.loads(_run_ytdlp(args))
     except json.JSONDecodeError as exc:
         raise RuntimeError("Failed to parse yt-dlp output.") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Requested format is not available.")
+    return parsed
 
 
 def _extract_ytdlp_json(url: str, player_client: str | None = None) -> dict[str, Any]:
     youtube_args = _youtube_extractor_args(player_client) if _is_youtube_url(url) else []
-    args = [*_base_ytdlp_args(), *youtube_args, "--dump-single-json", url]
+    extra: list[str] = []
+    if _is_youtube_url(url):
+        extra.append("--ignore-no-formats-error")
+    args = [*_base_ytdlp_args(), *youtube_args, *extra, "--dump-single-json", url]
     return _run_ytdlp_json(args)
 
 
@@ -570,7 +577,7 @@ def merge_and_get_path(url: str, format_selector: str, title: str) -> tuple[Path
     _run_ytdlp(
         [
             *_base_ytdlp_args(),
-            *(_youtube_extractor_args("android_vr,tv,web") if _is_youtube_url(url) else []),
+            *(_youtube_extractor_args(None) if _is_youtube_url(url) else []),
             "-f",
             format_selector,
             "--merge-output-format",
