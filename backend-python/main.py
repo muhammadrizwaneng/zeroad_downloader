@@ -3,7 +3,7 @@ import re
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, HttpUrl
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -17,6 +17,7 @@ from ytdlp_service import (
     extract_media,
     merge_and_get_path,
     normalize_media_url,
+    resolve_direct_download_url,
 )
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -84,6 +85,11 @@ def download(request: Request, url: HttpUrl, format: str, title: str = "video"):
 
     tmp_dir = None
     try:
+        # Fast path: redirect phone straight to the CDN (no server merge, no timeout).
+        direct_url = resolve_direct_download_url(str(url), format)
+        if direct_url:
+            return RedirectResponse(direct_url, status_code=302)
+
         file_path, tmp_dir = merge_and_get_path(str(url), format, title)
         filename = f"{_safe_filename(title)}.mp4"
         return FileResponse(

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
-EXTRACT_TIMEOUT_SEC = 120
+EXTRACT_TIMEOUT_SEC = 90
 MERGE_TIMEOUT_SEC = 300
 YTDLP_BIN = os.environ.get("YTDLP_PATH", "yt-dlp")
 
@@ -21,12 +21,8 @@ FAST_ARGS = [
     "15",
 ]
 
-# Default yt-dlp client first; avoid tv-only (breaks on DRM trailers).
-YOUTUBE_PLAYER_CLIENTS: list[str | None] = [
-    None,
-    "android_vr,tv,web",
-    "mweb",
-]
+# Single client for speed; retry only on fast bot/format errors.
+YOUTUBE_PLAYER_CLIENTS: list[str | None] = [None, "android_vr,tv,web"]
 
 _cookies_file_path: str | None = None
 
@@ -510,11 +506,12 @@ def _build_format_map(data: dict[str, Any], api_base_url: str) -> dict[str, dict
 
 
 def _finalize_formats(formats: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(
-        formats.values(),
-        key=lambda item: int("".join(ch for ch in item["quality"] if ch.isdigit()) or 0),
-        reverse=True,
-    )[:8]
+    def sort_key(item: dict[str, Any]) -> tuple[bool, int]:
+        digits = int("".join(ch for ch in item["quality"] if ch.isdigit()) or 0)
+        # Prefer direct / non-merge formats first (fast CDN download).
+        return (bool(item.get("needsMerge")), -digits)
+
+    return sorted(formats.values(), key=sort_key)[:8]
 
 
 def _run_ytdlp(args: list[str], timeout_sec: int = EXTRACT_TIMEOUT_SEC) -> str:
@@ -605,6 +602,39 @@ def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
 def _safe_filename(title: str) -> str:
     cleaned = re.sub(r"[^\w\s.-]", "", title).strip()[:80]
     return cleaned or "video"
+
+
+def resolve_direct_download_url(url: str, format_selector: str) -> str | None:
+    """Get a direct CDN URL via yt-dlp -g (fast, no server merge). Returns None if merge is required."""
+    selectors: list[str] = []
+    for candidate in (format_selector, "best", "b", "bv*+ba/b"):
+        if candidate not in selectors:
+            selectors.append(candidate)
+
+    clients = _youtube_player_clients() if _is_youtube_url(url) else [None]
+
+    for selector in selectors:
+        for player_client in clients:
+            try:
+                youtube_args = _youtube_extractor_args(player_client) if _is_youtube_url(url) else []
+                stdout = _run_ytdlp(
+                    [
+                        *_base_ytdlp_args(),
+                        *youtube_args,
+                        "-f",
+                        selector,
+                        "-g",
+                        "--no-playlist",
+                        url,
+                    ],
+                    timeout_sec=60,
+                )
+                lines = [line.strip() for line in stdout.splitlines() if line.strip().startswith("http")]
+                if len(lines) == 1:
+                    return lines[0]
+            except RuntimeError:
+                continue
+    return None
 
 
 def _friendly_download_error(message: str) -> str:
