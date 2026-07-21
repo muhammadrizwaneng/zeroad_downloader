@@ -622,6 +622,9 @@ def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
             _add_youtube_quality_presets(data, api_base_url, formats)
         _add_universal_fallback(data, api_base_url, formats)
 
+    if _is_youtube_url(normalized_url):
+        _attach_youtube_direct_urls(formats, data.get("webpage_url") or normalized_url)
+
     result_formats = _finalize_formats(formats)
     if not result_formats:
         raise RuntimeError("No downloadable formats found. Try another link or platform.")
@@ -637,42 +640,62 @@ def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
     }
 
 
+def _normalize_download_format(format_selector: str) -> str:
+    """Merge/selectors like 137+140 need server merge — use single-file best for CDN redirect."""
+    lower = format_selector.lower()
+    if "+" in format_selector or "bestvideo" in lower or "*" in lower:
+        return "best"
+    return format_selector
+
+
+def _get_direct_url_once(url: str, format_selector: str) -> str | None:
+    """Single yt-dlp -g call (one POT request). Returns direct CDN URL or None."""
+    selector = _normalize_download_format(format_selector)
+    try:
+        youtube_args = _youtube_extractor_args(None) if _is_youtube_url(url) else []
+        stdout = _run_ytdlp(
+            [
+                *_base_ytdlp_args(),
+                *youtube_args,
+                "-f",
+                selector,
+                "-g",
+                "--no-playlist",
+                url,
+            ],
+            timeout_sec=90,
+        )
+        lines = [line.strip() for line in stdout.splitlines() if line.strip().startswith("http")]
+        if len(lines) == 1:
+            return lines[0]
+    except RuntimeError:
+        if selector != "best":
+            return _get_direct_url_once(url, "best")
+    return None
+
+
+def _attach_youtube_direct_urls(formats: dict[str, dict[str, Any]], page_url: str) -> None:
+    """Resolve CDN URL once at extract time so Download skips server yt-dlp/POT."""
+    direct_best = _get_direct_url_once(page_url, "best")
+    if not direct_best:
+        return
+
+    for fmt in formats.values():
+        quality = (fmt.get("quality") or "").lower()
+        format_id = (fmt.get("formatId") or "").lower()
+        if quality == "best available" or format_id in {"best", "b"}:
+            fmt["url"] = direct_best
+            fmt["needsMerge"] = False
+
+
 def _safe_filename(title: str) -> str:
     cleaned = re.sub(r"[^\w\s.-]", "", title).strip()[:80]
     return cleaned or "video"
 
 
 def resolve_direct_download_url(url: str, format_selector: str) -> str | None:
-    """Get a direct CDN URL via yt-dlp -g (fast, no server merge). Returns None if merge is required."""
-    selectors: list[str] = []
-    for candidate in (format_selector, "best", "b", "bv*+ba/b"):
-        if candidate not in selectors:
-            selectors.append(candidate)
-
-    clients = _youtube_player_clients() if _is_youtube_url(url) else [None]
-
-    for selector in selectors:
-        for player_client in clients:
-            try:
-                youtube_args = _youtube_extractor_args(player_client) if _is_youtube_url(url) else []
-                stdout = _run_ytdlp(
-                    [
-                        *_base_ytdlp_args(),
-                        *youtube_args,
-                        "-f",
-                        selector,
-                        "-g",
-                        "--no-playlist",
-                        url,
-                    ],
-                    timeout_sec=60,
-                )
-                lines = [line.strip() for line in stdout.splitlines() if line.strip().startswith("http")]
-                if len(lines) == 1:
-                    return lines[0]
-            except RuntimeError:
-                continue
-    return None
+    """Get a direct CDN URL via yt-dlp -g (single attempt)."""
+    return _get_direct_url_once(url, format_selector)
 
 
 def _friendly_download_error(message: str) -> str:
@@ -717,35 +740,20 @@ def merge_and_get_path(url: str, format_selector: str, title: str) -> tuple[Path
     tmp_dir = tempfile.TemporaryDirectory(prefix="zeroads-")
     output_template = str(Path(tmp_dir.name) / "download.%(ext)s")
 
-    selectors: list[str] = []
-    for candidate in (
-        format_selector,
-        "best",
-        "bv*+ba/b",
-        "bestvideo*+bestaudio/best",
-        "b",
-    ):
-        if candidate not in selectors:
-            selectors.append(candidate)
-
-    clients = _youtube_player_clients() if _is_youtube_url(url) else [None]
+    selector = _normalize_download_format(format_selector)
     last_error: RuntimeError | None = None
 
-    for selector in selectors:
-        for player_client in clients:
-            try:
-                _run_ytdlp_merge(url, selector, output_template, player_client)
-                files = [path for path in Path(tmp_dir.name).iterdir() if not path.name.endswith(".part")]
-                if files:
-                    return files[0], tmp_dir
-                raise RuntimeError("Merge finished but no output file was created.")
-            except RuntimeError as exc:
-                last_error = exc
-                if not _is_youtube_url(url) or not _is_retryable_youtube_error(str(exc)):
-                    break
-        else:
-            continue
-        break
+    for candidate in (selector, "best"):
+        try:
+            _run_ytdlp_merge(url, candidate, output_template, None)
+            files = [path for path in Path(tmp_dir.name).iterdir() if not path.name.endswith(".part")]
+            if files:
+                return files[0], tmp_dir
+            raise RuntimeError("Merge finished but no output file was created.")
+        except RuntimeError as exc:
+            last_error = exc
+            if candidate == "best":
+                break
 
     tmp_dir.cleanup()
     raise last_error or RuntimeError("Download failed.")
