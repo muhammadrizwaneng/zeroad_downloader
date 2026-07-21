@@ -69,8 +69,9 @@ export function HomeScreen() {
   useSharedUrl(handleSharedUrl);
 
   const handleDownload = useCallback((format: MediaFormat) => {
-    const mergeNote = format.needsMerge
-      ? '\n\nThe server will merge video + audio first. This can take 1–3 minutes.'
+    const isServerMerge = format.needsMerge || format.url.includes('/api/download');
+    const mergeNote = isServerMerge
+      ? '\n\nTip: pick “Best available” without MERGED for fastest download.'
       : '';
     Alert.alert(
       'Start download',
