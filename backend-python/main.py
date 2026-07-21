@@ -14,6 +14,7 @@ from extract_jobs import create_job, get_job
 from ytdlp_service import (
     _friendly_download_error,
     _friendly_ytdlp_error,
+    _needs_server_proxy_download,
     _safe_filename,
     extract_media,
     merge_and_get_path,
@@ -101,13 +102,16 @@ def download(request: Request, url: HttpUrl, format: str, title: str = "video"):
         return JSONResponse(status_code=400, content={"error": "Invalid format selector."})
 
     tmp_dir = None
+    page_url = str(url)
     try:
-        # Fast path: redirect phone straight to the CDN (no server merge, no timeout).
-        direct_url = resolve_direct_download_url(str(url), format)
+        # TikTok/Instagram CDN blocks mobile browsers — always stream from server.
+        direct_url = None
+        if not _needs_server_proxy_download(page_url):
+            direct_url = resolve_direct_download_url(page_url, format)
         if direct_url:
             return RedirectResponse(direct_url, status_code=302)
 
-        file_path, tmp_dir = merge_and_get_path(str(url), format, title)
+        file_path, tmp_dir = merge_and_get_path(page_url, format, title)
         filename = f"{_safe_filename(title)}.mp4"
         return FileResponse(
             path=file_path,

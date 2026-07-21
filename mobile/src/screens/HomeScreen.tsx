@@ -72,9 +72,12 @@ export function HomeScreen() {
   useSharedUrl(handleSharedUrl);
 
   const handleDownload = useCallback((format: MediaFormat) => {
-    const isServerMerge = format.needsMerge || format.url.includes('/api/download');
-    const mergeNote = isServerMerge
-      ? '\n\nTip: pick “Best available” without MERGED for fastest download.'
+    const isServerDownload =
+      format.needsMerge ||
+      format.url.includes('/api/download') ||
+      /tiktok\.com|instagram\.com/i.test(format.url);
+    const mergeNote = isServerDownload
+      ? '\n\nThe file will download through the ZeroAds server (required for TikTok/Instagram).'
       : '';
     Alert.alert(
       'Start download',

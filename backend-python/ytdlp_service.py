@@ -39,6 +39,21 @@ def _is_facebook_url(url: str) -> bool:
     return "facebook.com" in host or "fb.watch" in host
 
 
+def _is_tiktok_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return "tiktok.com" in host
+
+
+def _is_instagram_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return "instagram.com" in host
+
+
+def _needs_server_proxy_download(page_url: str) -> bool:
+    """Platforms whose CDN URLs fail in mobile browsers — serve via /api/download."""
+    return _is_tiktok_url(page_url) or _is_instagram_url(page_url)
+
+
 def _pot_provider_ready() -> bool:
     pot_url = os.environ.get("YTDLP_POT_PROVIDER_URL", "http://127.0.0.1:4416").strip()
     if not pot_url:
@@ -628,6 +643,13 @@ def extract_media(url: str, api_base_url: str) -> dict[str, Any]:
             data.get("webpage_url") or normalized_url,
             data,
         )
+    elif _needs_server_proxy_download(normalized_url):
+        _force_proxy_download_urls(
+            formats,
+            data.get("webpage_url") or normalized_url,
+            api_base_url,
+            data.get("title") or "video",
+        )
 
     result_formats = _finalize_formats(formats)
     if not result_formats:
@@ -757,14 +779,26 @@ def _get_direct_url_once(url: str, format_selector: str) -> str | None:
     return None
 
 
+def _force_proxy_download_urls(
+    formats: dict[str, dict[str, Any]],
+    page_url: str,
+    api_base_url: str,
+    title: str,
+) -> None:
+    """Route downloads through the server — required for TikTok/Instagram CDN auth."""
+    for fmt in formats.values():
+        format_id = fmt.get("formatId") or "best"
+        fmt["url"] = _build_download_url(api_base_url, page_url, format_id, title)
+        fmt["needsMerge"] = True
+
+
 def _attach_youtube_direct_urls(
     formats: dict[str, dict[str, Any]],
     page_url: str,
     extract_data: dict[str, Any],
 ) -> None:
-    """Resolve CDN URLs at extract time — prefer JSON URLs, minimal extra yt-dlp calls."""
+    """Resolve CDN URLs from extract JSON only — no extra yt-dlp/POT during extract."""
     raw_formats = extract_data.get("formats") or []
-    pending_selectors: dict[str, list[dict[str, Any]]] = {}
 
     for fmt in formats.values():
         current_url = fmt.get("url") or ""
@@ -777,17 +811,6 @@ def _attach_youtube_direct_urls(
         if direct:
             fmt["url"] = direct
             fmt["needsMerge"] = False
-            continue
-
-        pending_selectors.setdefault(format_id, []).append(fmt)
-
-    for format_id, targets in pending_selectors.items():
-        direct = _get_direct_url_once(page_url, format_id)
-        if not direct:
-            continue
-        for target in targets:
-            target["url"] = direct
-            target["needsMerge"] = False
 
 
 def _safe_filename(title: str) -> str:
