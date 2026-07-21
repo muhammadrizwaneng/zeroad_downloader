@@ -28,7 +28,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py ytdlp_service.py start.sh ./
+COPY main.py ytdlp_service.py extract_jobs.py start.sh ./
 RUN chmod +x start.sh
 
 CMD ["./start.sh"]

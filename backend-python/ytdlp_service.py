@@ -4,11 +4,13 @@ import re
 import shutil
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
-EXTRACT_TIMEOUT_SEC = 90
+EXTRACT_TIMEOUT_SEC = 240
 MERGE_TIMEOUT_SEC = 300
 YTDLP_BIN = os.environ.get("YTDLP_PATH", "yt-dlp")
 
@@ -21,8 +23,8 @@ FAST_ARGS = [
     "15",
 ]
 
-# Single client for speed; retry only on fast bot/format errors.
-YOUTUBE_PLAYER_CLIENTS: list[str | None] = [None, "android_vr,tv,web"]
+# One attempt — Render free CPU is too slow for multiple yt-dlp runs.
+YOUTUBE_PLAYER_CLIENTS: list[str | None] = [None]
 
 _cookies_file_path: str | None = None
 
@@ -30,6 +32,30 @@ _cookies_file_path: str | None = None
 def _is_youtube_url(url: str) -> bool:
     host = urlparse(url).netloc.lower()
     return host.endswith("youtube.com") or host == "youtu.be" or host.endswith(".youtu.be")
+
+
+def _is_facebook_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return "facebook.com" in host or "fb.watch" in host
+
+
+def _pot_provider_ready() -> bool:
+    pot_url = os.environ.get("YTDLP_POT_PROVIDER_URL", "http://127.0.0.1:4416").strip()
+    if not pot_url:
+        return False
+    if os.environ.get("YTDLP_DISABLE_POT", "").lower() in {"1", "true", "yes"}:
+        return False
+    try:
+        request = urllib.request.Request(
+            f"{pot_url.rstrip('/')}/get_pot",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=4) as response:
+            return response.status == 200
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
 
 
 def _ensure_cookies_file() -> str | None:
@@ -67,9 +93,11 @@ def _base_ytdlp_args() -> list[str]:
 
 def _youtube_extractor_args(player_client: str | None = None) -> list[str]:
     args: list[str] = []
-    pot_url = os.environ.get("YTDLP_POT_PROVIDER_URL", "http://127.0.0.1:4416").strip()
-    if pot_url:
-        args.extend(["--extractor-args", f"youtubepot-bgutilhttp:base_url={pot_url}"])
+    # Skip slow/broken POT when cookies are available or provider is down.
+    if _pot_provider_ready() and not _ensure_cookies_file():
+        pot_url = os.environ.get("YTDLP_POT_PROVIDER_URL", "http://127.0.0.1:4416").strip()
+        if pot_url:
+            args.extend(["--extractor-args", f"youtubepot-bgutilhttp:base_url={pot_url}"])
     if player_client:
         args.extend(["--extractor-args", f"youtube:player_client={player_client}"])
     return args
@@ -103,11 +131,21 @@ def _is_retryable_youtube_error(message: str) -> bool:
     return _is_youtube_bot_block(message) or _is_youtube_format_error(message)
 
 
+def _is_facebook_error(message: str) -> bool:
+    lowered = message.lower()
+    return "[facebook]" in lowered or "cannot parse data" in lowered
+
+
 def _friendly_ytdlp_error(message: str) -> str:
     if _is_youtube_bot_block(message):
         return (
             "YouTube blocked this download from the server. "
-            "Add fresh YouTube cookies to Render (see DEPLOY.md), or try TikTok/Instagram instead."
+            "Add fresh YouTube cookies to Render (YTDLP_COOKIES), or try TikTok/Instagram."
+        )
+    if _is_facebook_error(message):
+        return (
+            "Facebook video could not be read. Use a public video link, or add "
+            "Facebook cookies to Render (YTDLP_COOKIES)."
         )
     if _is_youtube_format_error(message):
         return "YouTube formats could not be read for this video. Try again or use a different link."

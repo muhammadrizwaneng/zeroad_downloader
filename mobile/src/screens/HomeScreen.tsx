@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FormatCard, ResultHeader } from '../components/FormatCard';
 import { API_BASE_URL } from '../config';
 import { SHARE_INTENT_HINT, useSharedUrl } from '../hooks/useSharedUrl';
-import { checkBackendHealth, extractMedia } from '../services/api';
+import { checkBackendHealth, extractMedia, wakeBackend } from '../services/api';
 import type { ExtractResult, MediaFormat } from '../types';
 import { getPlatformLabel } from '../utils/url';
 
@@ -24,6 +24,7 @@ export function HomeScreen() {
   const insets = useSafeAreaInsets();
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingHint, setLoadingHint] = useState<string | null>(null);
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
   const [result, setResult] = useState<ExtractResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,19 +42,21 @@ export function HomeScreen() {
     }
 
     setLoading(true);
+    setLoadingHint('Connecting to server…');
     setError(null);
     setResult(null);
     setSharedFrom(getPlatformLabel(trimmed));
 
     try {
-      // Wake Render (free tier sleeps after ~15 min idle).
-      await checkBackendHealth();
+      await wakeBackend();
+      setLoadingHint('Extracting video info…');
       const data = await extractMedia(trimmed);
       setResult(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong.');
     } finally {
       setLoading(false);
+      setLoadingHint(null);
     }
   }, [url]);
 
@@ -157,6 +160,10 @@ export function HomeScreen() {
             <Text style={styles.extractButtonText}>Extract media</Text>
           )}
         </Pressable>
+
+        {loading && loadingHint ? (
+          <Text style={styles.loadingHint}>{loadingHint}</Text>
+        ) : null}
 
         {error ? (
           <View style={styles.errorBox}>
@@ -277,6 +284,12 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 16,
     fontWeight: '700',
+  },
+  loadingHint: {
+    color: '#94a3b8',
+    fontSize: 13,
+    textAlign: 'center',
+    marginTop: 12,
   },
   errorBox: {
     backgroundColor: '#450a0a',

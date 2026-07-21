@@ -10,6 +10,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.background import BackgroundTask
 
+from extract_jobs import create_job, get_job
 from ytdlp_service import (
     _friendly_download_error,
     _friendly_ytdlp_error,
@@ -71,10 +72,26 @@ def extract(request: Request, body: ExtractRequest):
     except Exception:
         return JSONResponse(status_code=400, content={"error": "A valid URL is required."})
 
-    try:
-        return extract_media(normalized, _api_base_url(request))
-    except RuntimeError as exc:
-        return JSONResponse(status_code=422, content={"error": _friendly_ytdlp_error(str(exc))})
+    job_id = create_job(extract_media, normalized, _api_base_url(request))
+    return {"jobId": job_id, "status": "pending"}
+
+
+@app.get("/api/extract/status/{job_id}")
+@limiter.limit("60/minute")
+def extract_status(job_id: str):
+    job = get_job(job_id)
+    if not job:
+        return JSONResponse(status_code=404, content={"error": "Job not found or expired."})
+
+    status = job.get("status", "pending")
+    if status == "done":
+        return {"status": "done", "result": job["result"]}
+    if status == "error":
+        return JSONResponse(
+            status_code=422,
+            content={"status": "error", "error": _friendly_ytdlp_error(str(job.get("error", "")))},
+        )
+    return {"status": status}
 
 
 @app.get("/api/download")
