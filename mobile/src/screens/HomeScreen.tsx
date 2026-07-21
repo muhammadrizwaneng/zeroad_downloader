@@ -216,7 +216,9 @@ export function HomeScreen() {
       {downloading ? (
         <View style={styles.downloadOverlay}>
           <ActivityIndicator color="#ffffff" size="large" />
-          <Text style={styles.downloadOverlayText}>Downloading… check notifications when done</Text>
+          <Text style={styles.downloadOverlayText}>
+            Preparing download… may take 1–2 min, then check notifications
+          </Text>
         </View>
       ) : null}
     </KeyboardAvoidingView>

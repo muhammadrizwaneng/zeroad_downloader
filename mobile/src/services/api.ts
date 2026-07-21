@@ -154,6 +154,15 @@ function safeFilename(title: string, quality: string, ext: string): string {
   return `${cleaned}_${quality}.${ext}`;
 }
 
+function serverDownloadUrl(pageUrl: string, format: MediaFormat, title: string): string {
+  const params = new URLSearchParams({
+    url: pageUrl,
+    format: format.formatId,
+    title: title.slice(0, 120),
+  });
+  return `${API_BASE_URL}/api/download?${params.toString()}`;
+}
+
 /** Save video to Android Downloads via system Download Manager. */
 export async function downloadMediaToDevice(
   pageUrl: string,
@@ -162,15 +171,8 @@ export async function downloadMediaToDevice(
 ): Promise<void> {
   await wakeBackend();
 
-  let downloadUrl = format.url;
-  if (!format.url.includes('googlevideo.com')) {
-    try {
-      downloadUrl = await resolveDownloadUrl(pageUrl, format);
-    } catch {
-      downloadUrl = format.url;
-    }
-  }
-
+  // Always download via our server — CDN URLs fail in Download Manager (no Referer/auth).
+  const downloadUrl = serverDownloadUrl(pageUrl, format, title);
   const filename = safeFilename(title, format.quality, format.ext);
 
   await RNBlobUtil.config({

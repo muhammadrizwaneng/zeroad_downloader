@@ -3,7 +3,7 @@ import re
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, HttpUrl
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -14,8 +14,6 @@ from extract_jobs import create_job, get_job
 from ytdlp_service import (
     _friendly_download_error,
     _friendly_ytdlp_error,
-    _get_direct_url_fast,
-    _needs_server_proxy_download,
     _safe_filename,
     extract_media,
     iter_ytdlp_download,
@@ -115,27 +113,21 @@ def download(request: Request, url: HttpUrl, format: str, title: str = "video"):
     page_url = str(url)
     filename = f"{_safe_filename(title)}.mp4"
     try:
-        # YouTube: redirect straight to googlevideo when possible.
-        if not _needs_server_proxy_download(page_url):
-            direct_url = _get_direct_url_fast(page_url)
-            if direct_url:
-                return RedirectResponse(direct_url, status_code=302)
-
-        # TikTok/Instagram/YouTube fallback: stream via yt-dlp (no slow disk merge).
-        stream = iter_ytdlp_download(page_url, format)
-        return StreamingResponse(
-            stream,
+        # Full file first — reliable for Android Download Manager (no CDN redirect).
+        file_path, tmp_dir = merge_and_get_path(page_url, format, title)
+        return FileResponse(
+            path=file_path,
             media_type="video/mp4",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            filename=filename,
+            background=BackgroundTask(tmp_dir.cleanup),
         )
     except RuntimeError as exc:
         try:
-            file_path, tmp_dir = merge_and_get_path(page_url, format, title)
-            return FileResponse(
-                path=file_path,
+            stream = iter_ytdlp_download(page_url, format)
+            return StreamingResponse(
+                stream,
                 media_type="video/mp4",
-                filename=filename,
-                background=BackgroundTask(tmp_dir.cleanup),
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
         except RuntimeError:
             if tmp_dir is not None:
