@@ -745,7 +745,7 @@ def _normalize_download_format(format_selector: str) -> str:
     return format_selector
 
 
-def _get_direct_url_once(url: str, format_selector: str) -> str | None:
+def _get_direct_url_once(url: str, format_selector: str, timeout_sec: int = 45) -> str | None:
     """Resolve CDN URL via yt-dlp -g with progressive format fallbacks."""
     youtube_args = _youtube_extractor_args(None) if _is_youtube_url(url) else []
     extra: list[str] = []
@@ -765,7 +765,7 @@ def _get_direct_url_once(url: str, format_selector: str) -> str | None:
                     "--no-playlist",
                     url,
                 ],
-                timeout_sec=90,
+                timeout_sec=timeout_sec,
             )
             lines = [line.strip() for line in stdout.splitlines() if line.strip().startswith("http")]
             if lines:
@@ -797,8 +797,15 @@ def _attach_youtube_direct_urls(
     page_url: str,
     extract_data: dict[str, Any],
 ) -> None:
-    """Resolve CDN URLs from extract JSON only — no extra yt-dlp/POT during extract."""
+    """Resolve googlevideo CDN URLs — JSON first, then one cached -g call per format id."""
     raw_formats = extract_data.get("formats") or []
+    resolved: dict[str, str | None] = {}
+
+    def resolve(format_id: str) -> str | None:
+        if format_id not in resolved:
+            picked = _pick_direct_url_from_formats(raw_formats, format_id)
+            resolved[format_id] = picked or _get_direct_url_once(page_url, format_id, timeout_sec=60)
+        return resolved[format_id]
 
     for fmt in formats.values():
         current_url = fmt.get("url") or ""
@@ -807,10 +814,74 @@ def _attach_youtube_direct_urls(
             continue
 
         format_id = fmt.get("formatId") or "best[ext=mp4]/best"
-        direct = _pick_direct_url_from_formats(raw_formats, format_id)
+        direct = resolve(format_id)
         if direct:
             fmt["url"] = direct
             fmt["needsMerge"] = False
+
+
+def _download_format_fallbacks(page_url: str, format_selector: str) -> list[str]:
+    selector = _normalize_download_format(format_selector)
+    if _is_youtube_url(page_url):
+        return _youtube_format_fallbacks(selector)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in [selector, "best"]:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
+def iter_ytdlp_download(page_url: str, format_selector: str):
+    """Stream media from yt-dlp stdout (no disk — fast for TikTok on Render)."""
+    if not shutil.which(YTDLP_BIN):
+        raise RuntimeError("yt-dlp is not installed on the server.")
+
+    youtube_args = _youtube_extractor_args(None) if _is_youtube_url(page_url) else []
+    extra: list[str] = []
+    if _is_youtube_url(page_url):
+        extra.append("--ignore-no-formats-error")
+
+    last_error = "Download failed."
+    for candidate in _download_format_fallbacks(page_url, format_selector):
+        proc = subprocess.Popen(
+            [
+                YTDLP_BIN,
+                *_base_ytdlp_args(),
+                *youtube_args,
+                *extra,
+                "-f",
+                candidate,
+                "-o",
+                "-",
+                "--no-part",
+                "--no-playlist",
+                page_url,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert proc.stdout is not None
+        first = proc.stdout.read(8192)
+        if first:
+
+            def generate():
+                yield first
+                while True:
+                    chunk = proc.stdout.read(65536)  # type: ignore[union-attr]
+                    if not chunk:
+                        break
+                    yield chunk
+                proc.wait()
+
+            return generate()
+
+        stderr = proc.stderr.read().decode() if proc.stderr else ""
+        proc.wait()
+        last_error = stderr.strip() or last_error
+
+    raise RuntimeError(last_error)
 
 
 def _safe_filename(title: str) -> str:

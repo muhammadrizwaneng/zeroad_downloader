@@ -3,7 +3,7 @@ import re
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, HttpUrl
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -17,6 +17,7 @@ from ytdlp_service import (
     _needs_server_proxy_download,
     _safe_filename,
     extract_media,
+    iter_ytdlp_download,
     merge_and_get_path,
     normalize_media_url,
     resolve_direct_download_url,
@@ -103,26 +104,34 @@ def download(request: Request, url: HttpUrl, format: str, title: str = "video"):
 
     tmp_dir = None
     page_url = str(url)
+    filename = f"{_safe_filename(title)}.mp4"
     try:
-        # TikTok/Instagram CDN blocks mobile browsers — always stream from server.
-        direct_url = None
+        # YouTube: redirect straight to googlevideo when possible.
         if not _needs_server_proxy_download(page_url):
             direct_url = resolve_direct_download_url(page_url, format)
-        if direct_url:
-            return RedirectResponse(direct_url, status_code=302)
+            if direct_url:
+                return RedirectResponse(direct_url, status_code=302)
 
-        file_path, tmp_dir = merge_and_get_path(page_url, format, title)
-        filename = f"{_safe_filename(title)}.mp4"
-        return FileResponse(
-            path=file_path,
+        # TikTok/Instagram/YouTube fallback: stream via yt-dlp (no slow disk merge).
+        stream = iter_ytdlp_download(page_url, format)
+        return StreamingResponse(
+            stream,
             media_type="video/mp4",
-            filename=filename,
-            background=BackgroundTask(tmp_dir.cleanup),
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except RuntimeError as exc:
-        if tmp_dir is not None:
-            tmp_dir.cleanup()
-        return JSONResponse(status_code=422, content={"error": _friendly_download_error(str(exc))})
+        try:
+            file_path, tmp_dir = merge_and_get_path(page_url, format, title)
+            return FileResponse(
+                path=file_path,
+                media_type="video/mp4",
+                filename=filename,
+                background=BackgroundTask(tmp_dir.cleanup),
+            )
+        except RuntimeError:
+            if tmp_dir is not None:
+                tmp_dir.cleanup()
+            return JSONResponse(status_code=422, content={"error": _friendly_download_error(str(exc))})
 
 
 if __name__ == "__main__":
