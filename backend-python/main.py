@@ -10,7 +10,14 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.background import BackgroundTask
 
-from ytdlp_service import _friendly_ytdlp_error, _safe_filename, extract_media, merge_and_get_path, normalize_media_url
+from ytdlp_service import (
+    _friendly_download_error,
+    _friendly_ytdlp_error,
+    _safe_filename,
+    extract_media,
+    merge_and_get_path,
+    normalize_media_url,
+)
 
 PORT = int(os.environ.get("PORT", "8000"))
 CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")
@@ -88,7 +95,7 @@ def download(request: Request, url: HttpUrl, format: str, title: str = "video"):
     except RuntimeError as exc:
         if tmp_dir is not None:
             tmp_dir.cleanup()
-        return JSONResponse(status_code=422, content={"error": _friendly_ytdlp_error(str(exc))})
+        return JSONResponse(status_code=422, content={"error": _friendly_download_error(str(exc))})
 
 
 if __name__ == "__main__":

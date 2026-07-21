@@ -570,14 +570,32 @@ def _safe_filename(title: str) -> str:
     return cleaned or "video"
 
 
-def merge_and_get_path(url: str, format_selector: str, title: str) -> tuple[Path, tempfile.TemporaryDirectory[str]]:
-    tmp_dir = tempfile.TemporaryDirectory(prefix="zeroads-")
-    output_template = str(Path(tmp_dir.name) / "download.%(ext)s")
+def _friendly_download_error(message: str) -> str:
+    if _is_youtube_format_error(message):
+        return (
+            "Download failed — this quality is not available for this video. "
+            "Go back and try another format (e.g. 720p or Best available)."
+        )
+    if _is_extract_timeout(message):
+        return "Download timed out. Try again or pick a lower quality."
+    return _friendly_ytdlp_error(message)
 
+
+def _run_ytdlp_merge(
+    url: str,
+    format_selector: str,
+    output_template: str,
+    player_client: str | None = None,
+) -> None:
+    youtube_args = _youtube_extractor_args(player_client) if _is_youtube_url(url) else []
+    extra: list[str] = []
+    if _is_youtube_url(url):
+        extra.append("--ignore-no-formats-error")
     _run_ytdlp(
         [
             *_base_ytdlp_args(),
-            *(_youtube_extractor_args(None) if _is_youtube_url(url) else []),
+            *youtube_args,
+            *extra,
             "-f",
             format_selector,
             "--merge-output-format",
@@ -589,9 +607,34 @@ def merge_and_get_path(url: str, format_selector: str, title: str) -> tuple[Path
         timeout_sec=MERGE_TIMEOUT_SEC,
     )
 
-    files = [path for path in Path(tmp_dir.name).iterdir() if not path.name.endswith(".part")]
-    if not files:
-        tmp_dir.cleanup()
-        raise RuntimeError("Merge finished but no output file was created.")
 
-    return files[0], tmp_dir
+def merge_and_get_path(url: str, format_selector: str, title: str) -> tuple[Path, tempfile.TemporaryDirectory[str]]:
+    tmp_dir = tempfile.TemporaryDirectory(prefix="zeroads-")
+    output_template = str(Path(tmp_dir.name) / "download.%(ext)s")
+
+    selectors = [format_selector]
+    fallback = "bestvideo*+bestaudio/best"
+    if format_selector != fallback:
+        selectors.append(fallback)
+
+    clients = _youtube_player_clients() if _is_youtube_url(url) else [None]
+    last_error: RuntimeError | None = None
+
+    for selector in selectors:
+        for player_client in clients:
+            try:
+                _run_ytdlp_merge(url, selector, output_template, player_client)
+                files = [path for path in Path(tmp_dir.name).iterdir() if not path.name.endswith(".part")]
+                if files:
+                    return files[0], tmp_dir
+                raise RuntimeError("Merge finished but no output file was created.")
+            except RuntimeError as exc:
+                last_error = exc
+                if not _is_youtube_url(url) or not _is_retryable_youtube_error(str(exc)):
+                    break
+        else:
+            continue
+        break
+
+    tmp_dir.cleanup()
+    raise last_error or RuntimeError("Download failed.")
