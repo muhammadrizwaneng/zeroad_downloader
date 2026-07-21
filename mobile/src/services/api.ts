@@ -1,5 +1,6 @@
+import RNBlobUtil from 'react-native-blob-util';
 import { API_BASE_URL } from '../config';
-import type { ExtractError, ExtractResult } from '../types';
+import type { ExtractError, ExtractResult, MediaFormat } from '../types';
 
 const EXTRACT_TIMEOUT_MS = 360_000;
 const POLL_INTERVAL_MS = 2_000;
@@ -146,6 +147,43 @@ export async function resolveDownloadUrl(
   } finally {
     clearTimeout(timer);
   }
+}
+
+function safeFilename(title: string, quality: string, ext: string): string {
+  const cleaned = title.replace(/[^\w\s.-]/g, '').trim().slice(0, 60) || 'video';
+  return `${cleaned}_${quality}.${ext}`;
+}
+
+/** Save video to Android Downloads via system Download Manager. */
+export async function downloadMediaToDevice(
+  pageUrl: string,
+  format: MediaFormat,
+  title: string,
+): Promise<void> {
+  await wakeBackend();
+
+  let downloadUrl = format.url;
+  if (!format.url.includes('googlevideo.com')) {
+    try {
+      downloadUrl = await resolveDownloadUrl(pageUrl, format);
+    } catch {
+      downloadUrl = format.url;
+    }
+  }
+
+  const filename = safeFilename(title, format.quality, format.ext);
+
+  await RNBlobUtil.config({
+    fileCache: true,
+    addAndroidDownloads: {
+      useDownloadManager: true,
+      notification: true,
+      title: filename,
+      description: 'ZeroAds download',
+      mime: 'video/mp4',
+      mediaScannable: true,
+    },
+  }).fetch('GET', downloadUrl);
 }
 
 export async function checkBackendHealth(): Promise<boolean> {

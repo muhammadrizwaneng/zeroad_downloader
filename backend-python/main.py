@@ -14,7 +14,7 @@ from extract_jobs import create_job, get_job
 from ytdlp_service import (
     _friendly_download_error,
     _friendly_ytdlp_error,
-    _get_direct_url_once,
+    _get_direct_url_fast,
     _needs_server_proxy_download,
     _safe_filename,
     extract_media,
@@ -117,7 +117,7 @@ def download(request: Request, url: HttpUrl, format: str, title: str = "video"):
     try:
         # YouTube: redirect straight to googlevideo when possible.
         if not _needs_server_proxy_download(page_url):
-            direct_url = _get_direct_url_once(page_url, format, timeout_sec=60)
+            direct_url = _get_direct_url_fast(page_url)
             if direct_url:
                 return RedirectResponse(direct_url, status_code=302)
 

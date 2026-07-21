@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
-  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -16,7 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FormatCard, ResultHeader } from '../components/FormatCard';
 import { API_BASE_URL } from '../config';
 import { SHARE_INTENT_HINT, useSharedUrl } from '../hooks/useSharedUrl';
-import { checkBackendHealth, extractMedia, resolveDownloadUrl, wakeBackend } from '../services/api';
+import { checkBackendHealth, downloadMediaToDevice, extractMedia, wakeBackend } from '../services/api';
 import type { ExtractResult, MediaFormat } from '../types';
 import { getPlatformLabel } from '../utils/url';
 
@@ -84,30 +83,28 @@ export function HomeScreen() {
       const mergeNote = isTikTokOrInstagram
         ? '\n\nThe file will download through the ZeroAds server (required for TikTok/Instagram).'
         : isServerDownload
-          ? '\n\nResolving direct download link…'
+          ? '\n\nMay take 1–2 min on the free server.'
           : '';
 
       Alert.alert(
         'Start download',
-        `Open ${format.quality} ${format.type} (${format.ext})?${mergeNote}`,
+        `Download ${format.quality} ${format.type} (${format.ext}) to your phone?${mergeNote}`,
         [
           { text: 'Cancel', style: 'cancel' },
           {
-            text: 'Open link',
+            text: 'Download',
             onPress: async () => {
               setDownloading(true);
               try {
-                let openUrl = format.url;
-                try {
-                  openUrl = await resolveDownloadUrl(result.webpageUrl, format);
-                } catch {
-                  // Resolve slow/failed — fall back to server stream URL.
-                }
-                await Linking.openURL(openUrl);
+                await downloadMediaToDevice(result.webpageUrl, format, result.title);
+                Alert.alert(
+                  'Download started',
+                  'Check your notification shade — the video will appear in Downloads when finished.',
+                );
               } catch (err) {
                 Alert.alert(
                   'Error',
-                  err instanceof Error ? err.message : 'Could not open the download URL.',
+                  err instanceof Error ? err.message : 'Download failed. Try again.',
                 );
               } finally {
                 setDownloading(false);
@@ -219,7 +216,7 @@ export function HomeScreen() {
       {downloading ? (
         <View style={styles.downloadOverlay}>
           <ActivityIndicator color="#ffffff" size="large" />
-          <Text style={styles.downloadOverlayText}>Getting download link… (up to 2 min on free server)</Text>
+          <Text style={styles.downloadOverlayText}>Downloading… check notifications when done</Text>
         </View>
       ) : null}
     </KeyboardAvoidingView>
