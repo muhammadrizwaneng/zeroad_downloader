@@ -1,9 +1,11 @@
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -11,9 +13,10 @@ from typing import Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
 EXTRACT_TIMEOUT_SEC = 240
-MERGE_TIMEOUT_SEC = 300
+MERGE_TIMEOUT_SEC = 100
 YOUTUBE_ATTACH_RESOLVE_TIMEOUT = 60
 MAX_YOUTUBE_ATTACH_RESOLVE_CALLS = 1
+STREAM_FIRST_BYTE_TIMEOUT_SEC = 20
 YTDLP_BIN = os.environ.get("YTDLP_PATH", "yt-dlp")
 
 FAST_ARGS = [
@@ -752,13 +755,15 @@ def _youtube_format_fallbacks(format_selector: str, fast: bool = False) -> list[
         # Simple selectors first — complex ones often fail on Render cloud IPs.
         fallbacks = ["best", "18", "22", normalized]
     else:
+        # Kept short on purpose: each candidate costs up to MERGE_TIMEOUT_SEC
+        # of a single HTTP response sending zero bytes. A long tail of
+        # low-value fallbacks here turns into a multi-minute hang that looks
+        # like "download doesn't work" to the client/proxy.
         fallbacks = [normalized]
         height_match = re.search(r"height<=(\d+)", normalized)
         if height_match:
-            height = height_match.group(1)
-            fallbacks.append(f"best[height<={height}]/best")
-            fallbacks.append(f"best[height<={height}]")
-        fallbacks.extend(["best[ext=mp4]/best", "best", "18", "22", "b"])
+            fallbacks.append(f"best[height<={height_match.group(1)}]/best")
+        fallbacks.append("best[ext=mp4]/best")
 
     seen: set[str] = set()
     unique: list[str] = []
@@ -951,6 +956,40 @@ def _download_format_fallbacks(page_url: str, format_selector: str) -> list[str]
     return unique
 
 
+def _read_first_chunk(proc: "subprocess.Popen[bytes]", timeout_sec: float) -> bytes | None:
+    """Read the first chunk from proc.stdout, bounded by timeout_sec.
+
+    Returns None on timeout (caller should kill proc and try the next
+    fallback) instead of blocking forever if yt-dlp hangs before it starts
+    producing output.
+    """
+    assert proc.stdout is not None
+    result: "queue.Queue[bytes]" = queue.Queue(maxsize=1)
+
+    def reader() -> None:
+        try:
+            result.put(proc.stdout.read(8192))  # type: ignore[union-attr]
+        except (OSError, ValueError):
+            result.put(b"")
+
+    threading.Thread(target=reader, daemon=True).start()
+    try:
+        return result.get(timeout=timeout_sec)
+    except queue.Empty:
+        return None
+
+
+def _terminate_proc(proc: "subprocess.Popen[bytes]") -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def iter_ytdlp_download(page_url: str, format_selector: str):
     """Stream media from yt-dlp stdout (no disk — fast for TikTok on Render)."""
     if not shutil.which(YTDLP_BIN):
@@ -981,17 +1020,28 @@ def iter_ytdlp_download(page_url: str, format_selector: str):
             stderr=subprocess.PIPE,
         )
         assert proc.stdout is not None
-        first = proc.stdout.read(8192)
+
+        first = _read_first_chunk(proc, STREAM_FIRST_BYTE_TIMEOUT_SEC)
+        if first is None:
+            # yt-dlp hung before producing any output — don't block forever.
+            _terminate_proc(proc)
+            last_error = "Download timed out before it could start."
+            continue
+
         if first:
 
-            def generate():
-                yield first
-                while True:
-                    chunk = proc.stdout.read(65536)  # type: ignore[union-attr]
-                    if not chunk:
-                        break
-                    yield chunk
-                proc.wait()
+            def generate(proc: "subprocess.Popen[bytes]" = proc, first: bytes = first):
+                try:
+                    yield first
+                    while True:
+                        chunk = proc.stdout.read(65536)  # type: ignore[union-attr]
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    # Ensures a client/DownloadManager that cancels mid-stream
+                    # doesn't leave an orphaned yt-dlp process behind.
+                    _terminate_proc(proc)
 
             return generate()
 

@@ -34,7 +34,9 @@ if CORS_ORIGIN == "*":
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        # No cookie/session auth anywhere in this API — credentials stay off
+        # so "*" doesn't get expanded into an allow-any-origin-with-credentials hole.
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -42,7 +44,7 @@ else:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[origin.strip() for origin in CORS_ORIGIN.split(",")],
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -138,4 +140,11 @@ def download(request: Request, url: HttpUrl, format: str, title: str = "video"):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=PORT,
+        reload=False,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
