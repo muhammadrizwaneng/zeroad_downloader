@@ -7,6 +7,12 @@ const POLL_INTERVAL_MS = 2_000;
 const HEALTH_TIMEOUT_MS = 15_000;
 const WAKE_MAX_WAIT_MS = 90_000;
 const WAKE_INTERVAL_MS = 3_000;
+// A live CDN link should start transferring within seconds; if it stalls,
+// fail over to the server rather than hang.
+const DIRECT_DOWNLOAD_TIMEOUT_MS = 45_000;
+// Generous safety net for the server merge path (bounded to ~3 min
+// server-side) plus the actual file transfer.
+const SERVER_DOWNLOAD_TIMEOUT_MS = 280_000;
 
 type ExtractJobResponse =
   | { jobId: string; status: 'pending' }
@@ -192,32 +198,38 @@ export async function downloadMediaToDevice(
     // Resolve failed — go straight to the server merge path.
   }
 
-  const config = {
-    fileCache: true,
-    addAndroidDownloads: {
-      useDownloadManager: true,
-      notification: true,
-      title: filename,
-      description: 'ZeroAds download',
-      mime: 'video/mp4',
-      mediaScannable: true,
-    },
-  };
+  function downloadConfig(timeout: number) {
+    return {
+      fileCache: true,
+      timeout,
+      addAndroidDownloads: {
+        useDownloadManager: true,
+        notification: true,
+        title: filename,
+        description: 'ZeroAds download',
+        mime: 'video/mp4',
+        mediaScannable: true,
+      },
+    };
+  }
 
   if (!isDirectAttempt) {
-    await RNBlobUtil.config(config).fetch('GET', downloadUrl);
+    await RNBlobUtil.config(downloadConfig(SERVER_DOWNLOAD_TIMEOUT_MS)).fetch('GET', downloadUrl);
     return;
   }
 
   try {
-    const res = await RNBlobUtil.config(config).fetch('GET', downloadUrl);
+    const res = await RNBlobUtil.config(downloadConfig(DIRECT_DOWNLOAD_TIMEOUT_MS)).fetch(
+      'GET',
+      downloadUrl,
+    );
     const status = res.info().status;
     if (status < 200 || status >= 300) {
       throw new Error(`Direct download failed with status ${status}`);
     }
   } catch {
-    // Direct CDN link was rejected/expired — fall back to the server.
-    await RNBlobUtil.config(config).fetch('GET', fallbackUrl);
+    // Direct CDN link was rejected/expired/stalled — fall back to the server.
+    await RNBlobUtil.config(downloadConfig(SERVER_DOWNLOAD_TIMEOUT_MS)).fetch('GET', fallbackUrl);
   }
 }
 
