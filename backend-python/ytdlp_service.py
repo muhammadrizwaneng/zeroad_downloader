@@ -1116,6 +1116,13 @@ def merge_and_get_path(url: str, format_selector: str, title: str) -> tuple[Path
             raise RuntimeError("Merge finished but no output file was created.")
         except RuntimeError as exc:
             last_error = exc
+            if _is_extract_timeout(str(exc)):
+                # A timeout means the environment (PO-token generation, CPU)
+                # is the bottleneck, not this specific format selector — every
+                # other candidate pays the same MERGE_TIMEOUT_SEC cost, so
+                # retrying just multiplies the wait for no real chance of
+                # success. Bail out immediately instead.
+                break
             if candidate == _youtube_format_fallbacks(selector)[-1]:
                 break
 
