@@ -171,11 +171,28 @@ export async function downloadMediaToDevice(
 ): Promise<void> {
   await wakeBackend();
 
-  // Always download via our server — CDN URLs fail in Download Manager (no Referer/auth).
-  const downloadUrl = serverDownloadUrl(pageUrl, format, title);
   const filename = safeFilename(title, format.quality, format.ext);
+  const fallbackUrl = serverDownloadUrl(pageUrl, format, title);
 
-  await RNBlobUtil.config({
+  // Prefer a direct CDN URL — either already attached at extract time, or
+  // resolved via /api/resolve (bounded ~70s). That downloads in seconds at
+  // network speed instead of minutes of server-side yt-dlp+ffmpeg merging.
+  // TikTok/Instagram (which need the server proxy for CDN auth) and any
+  // YouTube video /api/resolve genuinely can't resolve still fall through to
+  // the slower but reliable server merge path below.
+  let downloadUrl = fallbackUrl;
+  let isDirectAttempt = false;
+  try {
+    const resolved = await resolveDownloadUrl(pageUrl, format);
+    if (resolved && resolved !== fallbackUrl) {
+      downloadUrl = resolved;
+      isDirectAttempt = true;
+    }
+  } catch {
+    // Resolve failed — go straight to the server merge path.
+  }
+
+  const config = {
     fileCache: true,
     addAndroidDownloads: {
       useDownloadManager: true,
@@ -185,7 +202,23 @@ export async function downloadMediaToDevice(
       mime: 'video/mp4',
       mediaScannable: true,
     },
-  }).fetch('GET', downloadUrl);
+  };
+
+  if (!isDirectAttempt) {
+    await RNBlobUtil.config(config).fetch('GET', downloadUrl);
+    return;
+  }
+
+  try {
+    const res = await RNBlobUtil.config(config).fetch('GET', downloadUrl);
+    const status = res.info().status;
+    if (status < 200 || status >= 300) {
+      throw new Error(`Direct download failed with status ${status}`);
+    }
+  } catch {
+    // Direct CDN link was rejected/expired — fall back to the server.
+    await RNBlobUtil.config(config).fetch('GET', fallbackUrl);
+  }
 }
 
 export async function checkBackendHealth(): Promise<boolean> {
